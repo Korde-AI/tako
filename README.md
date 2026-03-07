@@ -96,7 +96,6 @@ Then run Tako in daemon mode and manage it with slash commands as your live dash
 
 ```bash
 tako onboard
-tako channels add discord
 tako start -d
 ```
 
