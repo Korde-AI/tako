@@ -19,7 +19,7 @@ Tako is a multi-channel AI agent runtime you can run locally or on a server. It 
 
 ## Install
 
-### Option A — npm (after publish)
+### Option A — npm
 
 ```bash
 npm install -g takotako
@@ -38,16 +38,16 @@ tako onboard
 tako start -d   ## preferred: run in background after onboard
 ```
 
-### Option B — pre-publish install from GitHub
+### Option B — install from GitHub source
 
 ```bash
-npm install -g github:Korde-AI/tako
+npm install -g github:shuyhere/tako
 ```
 
 ### Option C — from source
 
 ```bash
-git clone https://github.com/Korde-AI/tako.git
+git clone https://github.com/shuyhere/tako.git
 cd tako
 npm install
 npm run build

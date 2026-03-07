@@ -44,19 +44,19 @@ git --version
 
 ## 1) Install package
 
-### npm (after publish)
+### npm
 
 ```bash
 npm install -g takotako
 ```
 
-### Bun (after publish)
+### Bun
 
 ```bash
 bun add -g takotako
 ```
 
-### Pre-publish fallback
+### GitHub source fallback
 
 ```bash
 npm install -g github:shuyhere/tako
@@ -151,7 +151,7 @@ tako restart
 ## Uninstall
 
 ```bash
-npm uninstall -g tako
+npm uninstall -g takotako
 ```
 
 Optional cleanup (local state/config):
