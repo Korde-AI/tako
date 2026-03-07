@@ -89,6 +89,19 @@ See **[docs/USAGE.md](docs/USAGE.md)** for full command and workflow docs.
 
 ---
 
+## Recommended setup
+
+For the best day-to-day control surface, use Discord and invite your bot to a server.
+Then run Tako in daemon mode and manage it with slash commands as your live dashboard (`/status`, `/models`, `/agents`, `/queue`, `/usage`).
+
+```bash
+tako onboard
+tako channels add discord
+tako start -d
+```
+
+---
+
 ## Configuration
 
 Main config path:
