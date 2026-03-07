@@ -44,6 +44,8 @@ git --version
 
 ## 1) Install package
 
+Published package: `@shuyhere/takotako`
+
 ### npm
 
 ```bash
@@ -66,6 +68,7 @@ Verify:
 
 ```bash
 tako --help
+npm view @shuyhere/takotako version
 ```
 
 ## 2) First-time setup
@@ -138,7 +141,7 @@ tako status
 
 ```bash
 npm install -g @shuyhere/takotako
-# or pre-publish fallback:
+# or GitHub source fallback:
 # npm install -g github:shuyhere/tako
 ```
 

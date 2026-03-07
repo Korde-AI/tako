@@ -19,7 +19,7 @@ Tako is a multi-channel AI agent runtime you can run locally or on a server. It 
 
 ## Install
 
-### Option A — npm
+### Option A — npm (published package)
 
 ```bash
 npm install -g @shuyhere/takotako
