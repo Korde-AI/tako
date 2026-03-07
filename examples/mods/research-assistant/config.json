@@ -1,0 +1,8 @@
+{
+  "provider": "anthropic/claude-sonnet-4-6",
+  "toolProfile": "full",
+  "agent": {
+    "timeout": 900,
+    "thinking": "adaptive"
+  }
+}

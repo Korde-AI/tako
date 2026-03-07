@@ -1,0 +1,14 @@
+# Bun configuration for Tako
+# https://bun.sh/docs/runtime/bunfig
+
+[install]
+# Use hardlinks for faster installs
+backend = "hardlink"
+
+[run]
+# Silence Bun's built-in warnings for Node.js compat
+silent = false
+
+[test]
+# Test configuration
+root = "./tests"

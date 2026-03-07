@@ -1,0 +1,9 @@
+{
+  "name": "research-assistant",
+  "version": "0.1.0",
+  "author": "Tako Community",
+  "description": "AI research assistant — reads papers, manages literature, writes reviews",
+  "source": "https://github.com/tako-mods/research-assistant",
+  "skills": ["paper-reader", "literature-search", "review-writer"],
+  "tags": ["research", "academic", "papers", "arxiv"]
+}

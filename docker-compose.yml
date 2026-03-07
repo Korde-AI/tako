@@ -1,0 +1,21 @@
+services:
+  tako:
+    build: .
+    image: tako:local
+    container_name: tako
+    restart: unless-stopped
+    user: "${TAKO_UID:-1000}:${TAKO_GID:-1000}"
+    ports:
+      - "127.0.0.1:18790:18790"  # localhost ONLY (recommended)
+    volumes:
+      - ~/.tako:/home/node/.tako  # persist config, auth, sessions, workspace
+      - ~/projects:/home/node/projects:rw  # share host projects
+    environment:
+      - NODE_ENV=production
+      - TAKO_GATEWAY_BIND=0.0.0.0  # bind all interfaces inside container (host-side restricted to 127.0.0.1 via ports:)
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18790/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

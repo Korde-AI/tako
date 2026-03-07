@@ -1,0 +1,89 @@
+{
+  "name": "takotako",
+  "version": "0.0.1",
+  "description": "Agent-as-CPU OS: minimal core + pluggable skill arms",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "tako": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "bun run tsc",
+    "dev": "bun run tsc --watch",
+    "start": "bun run src/index.ts",
+    "start:node": "node dist/index.js",
+    "doctor": "bun run src/index.ts doctor",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "test:node": "node --test --import tsx tests/*.test.ts",
+    "lint": "tsc --noEmit",
+    "check": "bun run build && bun run typecheck && bun test",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "agent",
+    "llm",
+    "ai",
+    "os",
+    "pluggable",
+    "skills",
+    "anthropic",
+    "discord",
+    "telegram",
+    "cli",
+    "tools",
+    "memory",
+    "streaming",
+    "websocket"
+  ],
+  "author": "shuyhere",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shuyhere/tako"
+  },
+  "homepage": "https://github.com/shuyhere/tako#readme",
+  "bugs": {
+    "url": "https://github.com/shuyhere/tako/issues"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "docs",
+    "tako.example.json",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.0.0",
+    "bun": ">=1.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "@clack/prompts": "^1.1.0",
+    "@mariozechner/pi-coding-agent": "^0.56.1",
+    "discord.js": "^14.25.1",
+    "grammy": "^1.41.1",
+    "ink": "^6.8.0",
+    "ink-big-text": "^2.0.0",
+    "ink-gradient": "^4.0.0",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "open": "^11.0.0",
+    "openai": "^4.70.0",
+    "react": "^19.2.4",
+    "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "playwright-core": "^1.58.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.14",
+    "@types/ws": "^8.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.6.0"
+  }
+}

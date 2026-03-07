@@ -1,0 +1,28 @@
+
+*~
+# Build output
+# Dependencies
+dist/
+.DS_Store
+.env
+# Environment
+.env.*.local
+.env.local
+# IDE
+.idea/
+*.log
+# Logs
+node_modules/
+npm-debug.log*
+# OS
+*.swo
+*.swp
+.tako/
+tako.json
+# Tako runtime
+Thumbs.db
+.vscode/
+
+# Local agent workspace/runtime state
+workspace/
+tako-full-prompt.txt

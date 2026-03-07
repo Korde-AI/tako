@@ -1,0 +1,33 @@
+{
+  "providers": {
+    "primary": "anthropic/claude-sonnet-4-6"
+  },
+  "channels": {
+    "discord": {
+      "token": "YOUR_DISCORD_BOT_TOKEN"
+    },
+    "telegram": {
+      "token": "YOUR_TELEGRAM_BOT_TOKEN"
+    }
+  },
+  "tools": {
+    "profile": "full",
+    "deny": [],
+    "browser": {
+      "enabled": true,
+      "headless": true,
+      "idleTimeoutMs": 300000
+    }
+  },
+  "memory": {
+    "workspace": "~/.tako/workspace"
+  },
+  "gateway": {
+    "bind": "127.0.0.1",
+    "port": 18790
+  },
+  "agent": {
+    "timeout": 600,
+    "thinking": "adaptive"
+  }
+}
