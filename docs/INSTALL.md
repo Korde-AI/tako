@@ -47,13 +47,13 @@ git --version
 ### npm
 
 ```bash
-npm install -g takotako
+npm install -g @shuyhere/takotako
 ```
 
 ### Bun
 
 ```bash
-bun add -g takotako
+bun add -g @shuyhere/takotako
 ```
 
 ### GitHub source fallback
@@ -137,7 +137,7 @@ tako status
 ## Upgrade
 
 ```bash
-npm install -g takotako
+npm install -g @shuyhere/takotako
 # or pre-publish fallback:
 # npm install -g github:shuyhere/tako
 ```
@@ -151,7 +151,7 @@ tako restart
 ## Uninstall
 
 ```bash
-npm uninstall -g takotako
+npm uninstall -g @shuyhere/takotako
 ```
 
 Optional cleanup (local state/config):

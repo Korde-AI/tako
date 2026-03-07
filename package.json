@@ -1,5 +1,5 @@
 {
-  "name": "takotako",
+  "name": "@shuyhere/takotako",
   "version": "0.0.1",
   "description": "Agent-as-CPU OS: minimal core + pluggable skill arms",
   "type": "module",
