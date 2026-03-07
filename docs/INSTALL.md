@@ -4,9 +4,9 @@ This guide covers production and local installation for Tako.
 
 ## Requirements
 
-- Node.js >= 20
-- npm >= 9
-- (Optional) Bun >= 1.0
+- Node.js >= 20 (required)
+- npm >= 9 (required)
+- Bun >= 1.0 (recommended; required for Bun-based commands)
 - Git
 
 ## 0) Environment setup (for users)

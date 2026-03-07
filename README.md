@@ -19,6 +19,8 @@ Tako is a multi-channel AI agent runtime you can run locally or on a server. It 
 
 ## Install
 
+> Prerequisite: install **Node.js (>=20)** first, and install **Bun (>=1.0)** if you want to use Bun-based install/dev commands.
+
 ### Option A — npm (published package)
 
 ```bash
