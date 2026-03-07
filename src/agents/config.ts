@@ -29,6 +29,8 @@ export interface AgentDescriptor {
   isMain: boolean;
   /** Permission role name (admin, operator, standard, restricted, readonly). */
   role: string;
+  /** Per-agent skill directories (appended to global dirs at runtime). */
+  skills?: { dirs: string[] };
 }
 
 /**

@@ -647,13 +647,36 @@ async function runStart(): Promise<void> {
   });
 
   // Per-agent loops: each agent gets its own PromptBuilder (workspace) but shares
-  // the same provider (auth), toolRegistry, contextManager, hooks, and skillLoader.
+  // the same provider (auth), toolRegistry, contextManager, and hooks.
+  // Agents with per-agent skill dirs get their own SkillLoader; otherwise they
+  // share the global skillLoader and skillCommandSpecs.
   const agentLoops = new Map<string, AgentLoop>();
+  // Track per-agent skill command specs for channel slash-command registration.
+  const agentSkillCommandSpecsMap = new Map<string, SkillCommandSpec[]>();
   for (const agent of agentRegistry.list()) {
     if (agent.isMain) continue;
     const agentPromptBuilder = new PromptBuilder(agent.workspace);
     agentPromptBuilder.setSandboxInfo(config.sandbox.mode, config.sandbox.workspaceAccess);
     const agentModel = agent.model ?? config.providers.primary;
+
+    // Build per-agent skill loader when agent has extra skill dirs
+    let agentSkillLoader = skillLoader;
+    let agentSkillCommandSpecs = skillCommandSpecs;
+    if (agent.skills?.dirs && agent.skills.dirs.length > 0) {
+      const agentSkillDirs = [...config.skills.dirs, ...agent.skills.dirs];
+      agentSkillLoader = new SkillLoader(agentSkillDirs);
+      const agentSkillManifests = await agentSkillLoader.discover();
+      for (const manifest of agentSkillManifests) {
+        const loaded = await agentSkillLoader.load(manifest);
+        agentSkillLoader.registerTools(loaded, toolRegistry);
+        agentSkillLoader.registerHooks(loaded, hooks);
+      }
+      agentSkillCommandSpecs = buildSkillCommands(agentSkillLoader.getAll());
+      console.log(`[tako] Agent "${agent.id}" using ${agentSkillDirs.length} skill dir(s), ${agentSkillCommandSpecs.length} skill command(s)`);
+    }
+    // Store per-agent specs so channel setup below can use them
+    agentSkillCommandSpecsMap.set(agent.id, agentSkillCommandSpecs);
+
     const loop = new AgentLoop(
       {
         provider: failoverProvider,
@@ -661,8 +684,8 @@ async function runStart(): Promise<void> {
         promptBuilder: agentPromptBuilder,
         contextManager,
         hooks,
-        skillLoader,
-        skillCommandSpecs,
+        skillLoader: agentSkillLoader,
+        skillCommandSpecs: agentSkillCommandSpecs,
         model: agentModel,
         workspaceRoot: agent.workspace,
         agentId: agent.id,
@@ -1496,8 +1519,9 @@ async function runStart(): Promise<void> {
         return handleSlashCommand(commandName, channelId, author, agent.id, agentDiscord);
       });
 
-      // Merge user-invocable skill commands before connect
-      await agentDiscord.registerSkillCommands(skillCommandSpecs, async (commandName, channelId, author, guildId) => {
+      // Merge user-invocable skill commands before connect (use agent-specific specs if available)
+      const agentSpecificSkillSpecs = agentSkillCommandSpecsMap.get(agent.id) ?? skillCommandSpecs;
+      await agentDiscord.registerSkillCommands(agentSpecificSkillSpecs, async (commandName, channelId, author, guildId) => {
         return handleSlashCommand(commandName, channelId, author, agent.id, agentDiscord);
       });
 

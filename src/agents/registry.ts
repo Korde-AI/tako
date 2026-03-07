@@ -85,6 +85,7 @@ export class AgentRegistry {
       description: entry.description ?? '',
       isMain,
       role: isMain ? 'admin' : (entry.role ?? 'standard'),
+      skills: entry.skills,
     };
   }
 

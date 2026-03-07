@@ -124,6 +124,8 @@ export interface AgentEntry {
   channels?: AgentChannels;
   /** Per-agent prompt cache retention override. */
   cacheRetention?: 'none' | 'short' | 'long';
+  /** Per-agent skill directories (appended to global dirs). */
+  skills?: { dirs: string[] };
 }
 
 /** Channel connection preferences for an agent. */
