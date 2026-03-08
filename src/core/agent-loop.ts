@@ -306,14 +306,18 @@ export class AgentLoop {
     }
     userMessage = sanitized_input.text;
 
+    // New inbound user turn supersedes pending retries for this session.
+    this.deps.retryQueue?.cancelSession(session.id);
+
     // 1a3. Start typing indicator
     const chatId = session.metadata?.channelTarget as string ?? session.metadata?.channelId as string ?? session.id;
     if (this.deps.typingManager && this.deps.channel) {
       this.deps.typingManager.start(this.deps.channel, chatId);
     }
 
-    // 1b. React with 👀 (received)
-    const messageId = session.metadata?.messageId as string | undefined;
+    try {
+      // 1b. React with 👀 (received)
+      const messageId = session.metadata?.messageId as string | undefined;
     if (this.deps.reactionManager && this.deps.channel && messageId) {
       await this.deps.reactionManager.react(this.deps.channel, chatId, messageId, 'received');
     }
@@ -500,7 +504,15 @@ export class AgentLoop {
     while (turns < this.config.maxTurns) {
       turns++;
 
-      if (contextManager.needsCompaction(messages) && this.deps.compactor) {
+      // Progressive pruning before compaction to reduce context pressure.
+      const pruningResult = contextManager.pruneMessages(session.messages);
+      if (pruningResult.tokensSaved > 0) {
+        session.messages = pruningResult.messages;
+        messages.length = 0;
+        messages.push({ role: 'system', content: systemPrompt }, ...session.messages);
+      }
+
+      if (this.deps.compactor && this.deps.compactor.needsCompaction(session)) {
         const compactionResult = await this.deps.compactor.checkAndCompact(session);
         // Rebuild messages array from compacted session
         messages.length = 0;
@@ -840,24 +852,28 @@ export class AgentLoop {
       pendingToolCalls = [];
     }
 
-    // Stop typing indicator
-    this.deps.typingManager?.stop(chatId);
+      // Stop typing indicator
+      this.deps.typingManager?.stop(chatId);
 
-    // Transition reaction to completed
-    if (this.deps.reactionManager && this.deps.channel && messageId) {
-      await this.deps.reactionManager.transition(this.deps.channel, chatId, messageId, 'processing', 'completed');
-    }
+      // Transition reaction to completed
+      if (this.deps.reactionManager && this.deps.channel && messageId) {
+        await this.deps.reactionManager.transition(this.deps.channel, chatId, messageId, 'processing', 'completed');
+      }
 
-    // Clear tool loop history for this session turn
-    this.deps.toolLoopDetector?.clearSession(session.id);
+      // Clear tool loop history for this session turn
+      this.deps.toolLoopDetector?.clearSession(session.id);
 
-    if (hooks) {
-      await hooks.emit('agent_end', {
-        event: 'agent_end',
-        sessionId: session.id,
-        data: { turns },
-        timestamp: Date.now(),
-      });
+      if (hooks) {
+        await hooks.emit('agent_end', {
+          event: 'agent_end',
+          sessionId: session.id,
+          data: { turns },
+          timestamp: Date.now(),
+        });
+      }
+    } finally {
+      // Safety: always clear typing interval even if any unexpected error escapes.
+      this.deps.typingManager?.stop(chatId);
     }
   }
 }
