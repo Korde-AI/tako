@@ -421,7 +421,22 @@ async function runStart(): Promise<void> {
 
   const promptBuilder = new PromptBuilder(config.memory.workspace);
   promptBuilder.setSandboxInfo(config.sandbox.mode, config.sandbox.workspaceAccess);
-  const contextManager = new ContextManager();
+  const contextManager = new ContextManager({
+    compactionThreshold: Math.max(
+      0.5,
+      Math.min(0.95, (config.session.compaction.thresholdPercent ?? 80) / 100),
+    ),
+    pruning: config.pruning
+      ? {
+          enabled: config.pruning.enabled,
+          mode: config.pruning.mode,
+          toolResultTtlMs: config.pruning.toolResultTtlMs,
+          maxToolResultChars: config.pruning.maxToolResultChars,
+          startAt: config.pruning.startAt,
+          aggressiveAt: config.pruning.aggressiveAt,
+        }
+      : undefined,
+  });
 
   // Provider
   const [providerName] = config.providers.primary.split('/');
@@ -619,9 +634,7 @@ async function runStart(): Promise<void> {
   const { TypingManager } = await import('./core/typing.js');
   const { ReactionManager } = await import('./core/reactions.js');
   const typingManager = new TypingManager(config.typing ?? { enabled: true, intervalMs: 5000 });
-  const reactionManager = new ReactionManager(config.reactions ?? { enabled: true, reactions: {
-    received: '👋', processing: '💭', completed: '👍', failed: '❌', retrying: '🔄', thinking: '🧐',
-  }});
+  const reactionManager = new ReactionManager(config.reactions ?? { enabled: true });
 
   // Agent loop with skill loader for dynamic injection
   const agentLoop = new AgentLoop(
@@ -1136,6 +1149,11 @@ async function runStart(): Promise<void> {
     }
 
     const merged = MessageQueue.mergeMessages(messages);
+    if (!merged.trim()) {
+      console.warn(`[message-queue] Empty/invalid batch for session ${sessionId}, skipping`);
+      return;
+    }
+
     const channelRef = session.metadata?.channelRef as Channel | undefined;
     if (!channelRef) {
       console.warn(`[message-queue] No channel ref for session ${sessionId}, processing without channel`);

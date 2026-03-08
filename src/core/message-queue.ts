@@ -201,27 +201,39 @@ export class MessageQueue {
   /** Merge queued messages into a single string for the model. */
   static mergeMessages(messages: QueuedMessage[]): string {
     if (messages.length === 0) return '';
-    if (messages.length === 1) return messages[0].content;
+
+    // Defensive normalization: tolerate malformed queue entries so
+    // queue processing never crashes on unexpected payload shapes.
+    const normalized = messages.filter((m): m is QueuedMessage => Boolean(m));
+    if (normalized.length === 0) return '';
+
+    if (normalized.length === 1) {
+      return typeof normalized[0].content === 'string'
+        ? normalized[0].content
+        : String(normalized[0].content ?? '');
+    }
 
     // Detect group chat (multiple authors)
-    const authors = new Set(messages.map((m) => m.authorId));
+    const authors = new Set(normalized.map((m) => String(m.authorId ?? 'unknown')));
     const isGroup = authors.size > 1;
 
     // Calculate time span
-    const oldest = messages[0].timestamp;
-    const newest = messages[messages.length - 1].timestamp;
+    const oldest = Number(normalized[0].timestamp ?? Date.now());
+    const newest = Number(normalized[normalized.length - 1].timestamp ?? oldest);
     const spanSeconds = Math.round((newest - oldest) / 1000);
 
     const lines: string[] = [];
-    for (const msg of messages) {
+    for (const msg of normalized) {
+      const content = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '');
+      const author = String(msg.authorId ?? 'unknown');
       if (isGroup) {
-        lines.push(`[${msg.authorId}]: ${msg.content}`);
+        lines.push(`[${author}]: ${content}`);
       } else {
-        lines.push(msg.content);
+        lines.push(content);
       }
     }
 
-    const header = `[queued: ${messages.length} messages over ${spanSeconds}s]`;
+    const header = `[queued: ${normalized.length} messages over ${spanSeconds}s]`;
     return `${header}\n${lines.join('\n')}`;
   }
 }
