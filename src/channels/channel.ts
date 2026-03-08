@@ -155,6 +155,13 @@ export interface Channel {
   broadcast?(text: string): Promise<void>;
 
   /**
+   * Send a message directly to a specific channel/chat by ID.
+   * Used for targeted post-restart notifications.
+   * Optional — channels that don't support direct targeting can omit this.
+   */
+  sendToChannel?(channelId: string, text: string): Promise<string | void>;
+
+  /**
    * Edit an existing message (for streaming updates).
    * Optional — channels that don't support editing can omit this.
    *

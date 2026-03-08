@@ -158,11 +158,11 @@ export class Gateway {
         req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
         req.on('end', () => {
           try {
-            const { note, sessionKey } = body ? JSON.parse(body) : {} as { note?: string; sessionKey?: string };
+            const { note, sessionKey, channelId, agentId } = body ? JSON.parse(body) : {} as { note?: string; sessionKey?: string; channelId?: string; agentId?: string };
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ status: 'restarting' }));
             // Save restart note for post-restart delivery
-            this.scheduleRestart(note, sessionKey);
+            this.scheduleRestart(note, sessionKey, channelId, agentId);
           } catch {
             res.writeHead(400);
             res.end('Invalid JSON');
@@ -528,11 +528,13 @@ export class Gateway {
    *    (bun/node + current entrypoint), so relaunch is reliable and quick.
    * 3) Exit current process with SIGTERM as a fallback and to flush state.
    */
-  private scheduleRestart(note?: string, sessionKey?: string): void {
+  private scheduleRestart(note?: string, sessionKey?: string, channelId?: string, agentId?: string): void {
     const restartFile = join(homedir(), '.tako', 'restart-note.json');
     const data = {
       note: note || 'Tako restarted.',
       sessionKey: sessionKey || null,
+      channelId: channelId || null,
+      agentId: agentId || null,
       timestamp: new Date().toISOString(),
     };
 

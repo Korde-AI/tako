@@ -25,13 +25,24 @@ import type { TelegramChannel } from '../channels/telegram.js';
 export interface MessageToolDeps {
   discord?: DiscordChannel;
   telegram?: TelegramChannel;
+  /** Resolve the correct Discord channel for a given agentId at call time. */
+  resolveDiscord?: (agentId?: string) => DiscordChannel | undefined;
+  /** Resolve the correct Telegram channel for a given agentId at call time. */
+  resolveTelegram?: (agentId?: string) => TelegramChannel | undefined;
 }
 
 /**
  * Create the message tool bound to channel adapters.
+ * Supports per-agent channel resolution via resolveDiscord/resolveTelegram.
  */
 export function createMessageTools(deps: MessageToolDeps): Tool[] {
-  const { discord, telegram } = deps;
+  const { resolveDiscord, resolveTelegram } = deps;
+
+  // Fallback to static channels if resolvers not provided
+  const getDiscord = (agentId?: string): DiscordChannel | undefined =>
+    resolveDiscord ? resolveDiscord(agentId) : deps.discord;
+  const getTelegram = (agentId?: string): TelegramChannel | undefined =>
+    resolveTelegram ? resolveTelegram(agentId) : deps.telegram;
 
   const messageTool: Tool = {
     name: 'message',
@@ -119,12 +130,16 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
         return t;
       };
 
+      // Resolve per-agent channels at call time using ctx.agentId
+      const discord = getDiscord(ctx.agentId);
+      const telegram = getTelegram(ctx.agentId);
+
       // Validate platform availability
       if (p.platform === 'discord' && !discord) {
-        return { output: '', success: false, error: 'Discord channel is not configured or connected.' };
+        return { output: '', success: false, error: 'Discord channel is not configured or connected for this agent.' };
       }
       if (p.platform === 'telegram' && !telegram) {
-        return { output: '', success: false, error: 'Telegram channel is not configured or connected.' };
+        return { output: '', success: false, error: 'Telegram channel is not configured or connected for this agent.' };
       }
 
       try {
@@ -152,14 +167,14 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
                   attachments,
                 });
                 return {
-                  output: JSON.stringify({ sent: true, platform: 'discord', channelId: target, messageId: msgId, attached: true }),
+                  output: JSON.stringify({ sent: true, platform: 'discord', channelId: target, messageId: msgId, attached: true, agentId: ctx.agentId }),
                   success: true,
                 };
               }
 
               const msgId = await discord!.sendToChannel(target, p.message ?? '');
               return {
-                output: JSON.stringify({ sent: true, platform: 'discord', channelId: target, messageId: msgId }),
+                output: JSON.stringify({ sent: true, platform: 'discord', channelId: target, messageId: msgId, agentId: ctx.agentId }),
                 success: true,
               };
             } else {
@@ -168,7 +183,7 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
               }
               const msgId = await telegram!.sendToChat(target, p.message ?? '');
               return {
-                output: JSON.stringify({ sent: true, platform: 'telegram', chatId: target, messageId: msgId }),
+                output: JSON.stringify({ sent: true, platform: 'telegram', chatId: target, messageId: msgId, agentId: ctx.agentId }),
                 success: true,
               };
             }

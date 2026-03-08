@@ -9,6 +9,10 @@
  * - "allowlist": only listed user IDs are permitted
  *
  * The owner (first user to onboard) is always allowed.
+ *
+ * Claim flow:
+ * - If no allowlist exists (unclaimed), the first user to run /claim becomes the owner.
+ * - After claim, the bot locks to allowlist mode. No one else can /claim again.
  */
 
 import { homedir } from 'node:os';
@@ -24,6 +28,8 @@ export type AllowFromMode = 'allowlist' | 'open';
 export interface AllowFromConfig {
   allowedUserIds: string[];
   mode: AllowFromMode;
+  /** True once /claim has been used — prevents re-claiming. */
+  claimed?: boolean;
 }
 
 // ─── Paths ──────────────────────────────────────────────────────────
@@ -72,6 +78,39 @@ export async function isUserAllowed(
   const config = await loadAllowFrom(channel, agentId);
   if (config.mode === 'open') return true;
   return config.allowedUserIds.includes(userId);
+}
+
+// ─── Claim ──────────────────────────────────────────────────────────
+
+/**
+ * Check if this channel/agent has already been claimed by an owner.
+ * An unclaimed bot is in 'open' mode with no allowlist and no claimed flag.
+ */
+export async function isClaimed(channel: string, agentId: string): Promise<boolean> {
+  const config = await loadAllowFrom(channel, agentId);
+  return config.claimed === true || (config.mode === 'allowlist' && config.allowedUserIds.length > 0);
+}
+
+/**
+ * Claim ownership of this channel/agent.
+ * Only works if not already claimed — first user wins.
+ * Returns true on success, false if already claimed.
+ */
+export async function claimOwner(
+  channel: string,
+  agentId: string,
+  userId: string,
+): Promise<{ success: boolean; alreadyClaimed: boolean }> {
+  const already = await isClaimed(channel, agentId);
+  if (already) {
+    return { success: false, alreadyClaimed: true };
+  }
+  await saveAllowFrom(channel, agentId, {
+    allowedUserIds: [userId],
+    mode: 'allowlist',
+    claimed: true,
+  });
+  return { success: true, alreadyClaimed: false };
 }
 
 // ─── Tools ──────────────────────────────────────────────────────────

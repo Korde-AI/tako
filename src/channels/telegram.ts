@@ -301,6 +301,10 @@ export class TelegramChannel implements Channel {
   }
 
   /** Send a message to a specific chat ID. */
+  async sendToChannel(channelId: string, content: string): Promise<void> {
+    await this.sendToChat(channelId, content);
+  }
+
   async sendToChat(chatId: string, content: string): Promise<string> {
     if (!this.bot) throw new Error('[telegram] Not connected');
 

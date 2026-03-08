@@ -1,11 +1,11 @@
 /**
  * Reaction feedback — use emoji reactions to signal agent state.
  *
- * - 👀 = received/processing
- * - ⏳ = queued/waiting
- * - ✅ = completed successfully
- * - ❌ = failed
- * - 🔄 = retrying
+ * - 👋 = received/processing
+ * - 🧑‍💻 = queued/waiting
+ * - 🎉 = completed successfully
+ * - 😕 = failed
+ * - 🔁 = retrying
  * - 🤔 = thinking/reasoning
  */
 
@@ -24,11 +24,11 @@ export interface ReactionConfig {
 
 const DEFAULT_REACTIONS: Record<ReactionState, string> = {
   received: '👋',
-  processing: '💭',
-  completed: '👍',
-  failed: '😅',
-  retrying: '🤞',
-  thinking: '🧐',
+  processing: '🧑‍💻',
+  completed: '🎉',
+  failed: '😕',
+  retrying: '🔁',
+  thinking: '🤔',
 };
 
 // ─── Implementation ─────────────────────────────────────────────────

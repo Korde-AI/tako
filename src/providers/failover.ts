@@ -106,26 +106,27 @@ export class FailoverProvider implements Provider {
         continue;
       }
 
+      let emittedAnyChunk = false;
       try {
         const modifiedReq: ChatRequest = { ...req, model: modelRef };
-        const chunks: ChatChunk[] = [];
 
-        // Collect all chunks first to detect errors during streaming
-        for await (const chunk of provider.chat(modifiedReq)) {
-          chunks.push(chunk);
-        }
-
-        // Success — yield all chunks
         if (modelRef !== this.chain[0]) {
           console.log(`[failover] Using fallback model: ${modelRef}`);
         }
 
-        for (const chunk of chunks) {
+        // Stream-through chunks immediately for low latency.
+        for await (const chunk of provider.chat(modifiedReq)) {
+          emittedAnyChunk = true;
           yield chunk;
         }
         return;
       } catch (err: unknown) {
         lastError = err;
+
+        // If streaming already started, we cannot safely fallback mid-response.
+        if (emittedAnyChunk) {
+          throw err;
+        }
 
         if (this.isFallbackError(err)) {
           this.setCooldown(providerId);

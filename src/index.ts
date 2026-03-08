@@ -910,8 +910,13 @@ async function runStart(): Promise<void> {
       const aclAgentId = channel.agentId ?? 'main';
       const aclChannel = channel.id;
       if (aclChannel !== 'cli' && aclChannel !== 'tui') {
-        const allowed = await isUserAllowed(aclChannel, aclAgentId, msg.author.id);
-        if (!allowed) return; // silently ignore
+        // Always let /claim through — it needs to reach the command registry
+        // even when the bot is unclaimed (open mode) or when the user isn't on the allowlist yet.
+        const isClaimCommand = msg.content.trim().toLowerCase() === '/claim';
+        if (!isClaimCommand) {
+          const allowed = await isUserAllowed(aclChannel, aclAgentId, msg.author.id);
+          if (!allowed) return; // silently ignore
+        }
       }
 
       const session = getSession(msg, channel);
@@ -1640,10 +1645,24 @@ async function runStart(): Promise<void> {
     }
   }
 
-  // Register message tools (channel management: send, create/delete channels, threads, react)
+  // Register message tools with per-agent channel resolution.
+  // Each agent gets its own Discord/Telegram channel instance so messages
+  // are sent from the correct bot identity (codecode vs takotako vs pmpm).
   toolRegistry.registerAll(createMessageTools({
-    discord: discordChannel,
-    telegram: telegramChannel,
+    resolveDiscord: (agentId?: string) => {
+      if (agentId) {
+        const agentCh = discordChannels.find((ch) => ch.agentId === agentId);
+        if (agentCh) return agentCh;
+      }
+      return discordChannel;
+    },
+    resolveTelegram: (agentId?: string) => {
+      // Telegram: find agent-specific channel if registered
+      const agentTgChannel = channels.find(
+        (ch) => ch.id === 'telegram' && (ch as { agentId?: string }).agentId === agentId,
+      ) as TelegramChannel | undefined;
+      return agentTgChannel ?? telegramChannel;
+    },
   }));
 
   // Register introspection tools (tako_status, tako_config, tako_logs, session_transcript)
@@ -1941,14 +1960,32 @@ async function runStart(): Promise<void> {
     const { homedir } = await import('node:os');
     const restartNotePath = join(homedir(), '.tako', 'restart-note.json');
     const raw = readFileSync(restartNotePath, 'utf-8');
-    const restartNote = JSON.parse(raw) as { note: string; sessionKey?: string; timestamp: string };
+    const restartNote = JSON.parse(raw) as { note: string; sessionKey?: string; channelId?: string; agentId?: string; timestamp: string };
     unlinkSync(restartNotePath);
 
     const noteText = `⚙️ ${restartNote.note}`;
     console.log(`[tako] Post-restart: ${restartNote.note}`);
 
-    // Deliver to connected non-blocking channels (Discord, Telegram)
-    await broadcastToChannels(noteText);
+    // Deliver to the originating channel if we know it, otherwise broadcast
+    let delivered = false;
+    if (restartNote.channelId) {
+      // Find the agent's channel that can send to this specific channel
+      const targetAgentId = restartNote.agentId || 'main';
+      const agentChannel = channels.find((ch) => ch.agentId === targetAgentId && !blockingIds.has(ch.id))
+        ?? channels.find((ch) => !blockingIds.has(ch.id));
+      if (agentChannel?.sendToChannel) {
+        try {
+          await agentChannel.sendToChannel(restartNote.channelId, noteText);
+          delivered = true;
+        } catch (err) {
+          console.warn('[tako] Failed to deliver restart note to originating channel:', err);
+        }
+      }
+    }
+    if (!delivered) {
+      // Fallback: broadcast to all channels
+      await broadcastToChannels(noteText);
+    }
   } catch { /* no restart note, normal boot */ }
 
   // Connect the blocking channel (CLI or TUI) last

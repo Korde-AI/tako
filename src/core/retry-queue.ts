@@ -59,6 +59,9 @@ export class RetryQueue {
   enqueue(msg: Omit<QueuedMessage, 'id' | 'retryCount' | 'queuedAt'>): boolean {
     if (!this.config.enabled) return false;
 
+    // Keep only the latest queued retry per session to avoid stale replays.
+    this.cancelSession(msg.sessionId);
+
     const id = `retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const entry: QueuedMessage = {
       ...msg,
@@ -141,6 +144,19 @@ export class RetryQueue {
           err instanceof Error ? err.message : String(err),
         );
       }
+    }
+  }
+
+  /** Cancel all queued retries for a session (used when a newer user message arrives). */
+  cancelSession(sessionId: string): void {
+    for (const [id, entry] of this.queue.entries()) {
+      if (entry.sessionId !== sessionId) continue;
+      const timer = this.timers.get(id);
+      if (timer) {
+        clearTimeout(timer);
+        this.timers.delete(id);
+      }
+      this.queue.delete(id);
     }
   }
 

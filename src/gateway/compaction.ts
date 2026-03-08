@@ -30,6 +30,7 @@ export class SessionCompactor {
   private sessions: SessionManager;
   private provider: Provider | null;
   private hooks: HookSystem | null;
+  private smartSummary: boolean;
 
   constructor(
     config: SessionConfig,
@@ -43,6 +44,7 @@ export class SessionCompactor {
     this.sessions = sessions;
     this.provider = provider ?? null;
     this.hooks = hooks ?? null;
+    this.smartSummary = config.compaction.smartSummary ?? true;
   }
 
   /**
@@ -199,7 +201,9 @@ Maximum 500 words.`,
 
     // Build summary from messages being trimmed
     const messagesToTrim = session.messages.slice(0, messagesBefore - keepLast);
-    const summary = await this.buildSmartSummary(messagesToTrim);
+    const summary = this.smartSummary
+      ? await this.buildSmartSummary(messagesToTrim)
+      : this.buildSummary(messagesToTrim);
 
     // Replace old messages with summary + recent messages
     const kept = session.messages.slice(-keepLast);

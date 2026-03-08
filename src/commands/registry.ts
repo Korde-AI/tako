@@ -11,6 +11,7 @@ import type { SkillCommandSpec } from './skill-commands.js';
 import type { LoadedSkill } from '../skills/types.js';
 import { buildSkillCommands } from './skill-commands.js';
 import type { UsageTracker } from '../core/usage-tracker.js';
+import { claimOwner, isClaimed } from '../auth/allow-from.js';
 
 export interface CommandContext {
   channelId: string;
@@ -190,6 +191,7 @@ export class CommandRegistry {
           queue: '/queue <off|collect|debounce> — Set message queue mode',
           usage: '/usage [cost|off|tokens|full] — Show token/cost usage',
           approve: '/approve <id> <allow|deny|allow-always> — Resolve exec approval request',
+          claim: '/claim — Claim ownership of this bot (first user wins, locks to allowlist)',
         };
 
         if (target) {
@@ -373,6 +375,49 @@ export class CommandRegistry {
           this.deps.setQueueMode(mode);
         }
         return `Queue mode set to: **${mode}**`;
+      },
+    });
+
+    this.register({
+      name: 'claim',
+      description: 'Claim ownership of this bot — locks it to allowlist mode. First user wins.',
+      handler: async (_args, ctx) => {
+        // Determine channel type from channelId (e.g. "discord:123" → "discord")
+        const channelType = ctx.channelId.includes(':')
+          ? ctx.channelId.split(':')[0]!
+          : ctx.channelId;
+
+        // Skip for CLI/TUI — no point locking local access
+        if (channelType === 'cli' || channelType === 'tui') {
+          return '`/claim` is only available on remote channels (Discord, Telegram).';
+        }
+
+        const already = await isClaimed(channelType, ctx.agentId);
+        if (already) {
+          return [
+            '🔒 **Already claimed.**',
+            'This bot already has an owner. `/claim` can only be run once.',
+            '',
+            'If you are the owner and need to add more users, ask the bot:',
+            '> "add user `<user-id>` to the allowlist"',
+          ].join('\n');
+        }
+
+        const result = await claimOwner(channelType, ctx.agentId, ctx.authorId);
+        if (result.success) {
+          return [
+            '✅ **Claimed!**',
+            `You (${ctx.authorName} / \`${ctx.authorId}\`) are now the owner of this bot on **${channelType}**.`,
+            '',
+            '🔒 The bot is now in **allowlist mode** — only you can talk to it.',
+            '',
+            'To allow others:',
+            '> "add user `<user-id>` to the allowlist"',
+          ].join('\n');
+        }
+
+        // Race condition — someone else claimed between the check and the write
+        return '🔒 **Already claimed** by someone else. Too slow! 😄';
       },
     });
 
