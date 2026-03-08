@@ -43,13 +43,13 @@ tako start -d   ## preferred: run in background after onboard
 ### Option B — install from GitHub source
 
 ```bash
-npm install -g github:shuyhere/tako
+npm install -g github:Korde-AI/tako
 ```
 
 ### Option C — from source
 
 ```bash
-git clone https://github.com/shuyhere/tako.git
+git clone https://github.com/Korde-AI/tako.git
 cd tako
 npm install
 npm run build
