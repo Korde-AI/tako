@@ -374,7 +374,10 @@ export class PromptBuilder {
       this.pushFileSection(sections, parts, 'USER.md');
       // HEARTBEAT.md and BOOTSTRAP.md only loaded if non-empty/meaningful
       const heartbeat = parts.files.get('HEARTBEAT.md') ?? '';
-      if (heartbeat && !heartbeat.includes('[MISSING]') && heartbeat.trim().length > 50) {
+      const isDefaultHeartbeat =
+        heartbeat.includes('Keep this file empty') ||
+        heartbeat.includes('Add tasks below when you want the agent to check something periodically');
+      if (heartbeat && !heartbeat.includes('[MISSING]') && heartbeat.trim().length > 50 && !isDefaultHeartbeat) {
         sections.push(heartbeat);
       }
       // BOOTSTRAP.md is first-run only — skip if it contains default template text
