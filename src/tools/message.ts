@@ -9,8 +9,15 @@
  *
  * This is the tool for all messaging and channel management operations.
  * Do NOT confuse with skill-creator (which creates skills) or agents_add (which creates agents).
+ *
+ * Target resolution:
+ * - Pass "current" (or omit target) on a "send" action to reply in the
+ *   same channel/chat the agent is currently active in. The channel ID
+ *   is resolved from the session's ToolContext (ctx.channelTarget).
  */
 
+import { readFile } from 'node:fs/promises';
+import { basename } from 'node:path';
 import type { Tool, ToolContext, ToolResult } from './tool.js';
 import type { DiscordChannel } from '../channels/discord.js';
 import type { TelegramChannel } from '../channels/telegram.js';
@@ -53,11 +60,15 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
         },
         target: {
           type: 'string',
-          description: 'Channel ID, chat ID, or guild ID (depends on action)',
+          description: 'Channel ID, chat ID, or guild ID (depends on action). Use "current" to send to the channel this agent is currently active in.',
         },
         message: {
           type: 'string',
           description: 'Message content to send (for "send" action)',
+        },
+        media: {
+          type: 'string',
+          description: 'Optional media path or URL to attach (Discord send only)',
         },
         name: {
           type: 'string',
@@ -87,18 +98,25 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
       required: ['action', 'platform'],
     },
 
-    async execute(params: unknown, _ctx: ToolContext): Promise<ToolResult> {
+    async execute(params: unknown, ctx: ToolContext): Promise<ToolResult> {
       const p = params as {
         action: string;
         platform: 'discord' | 'telegram';
         target?: string;
         message?: string;
+        media?: string;
         name?: string;
         topic?: string;
         guildId?: string;
         parentId?: string;
         messageId?: string;
         emoji?: string;
+      };
+
+      // Resolve "current" target → use the session's active channel
+      const resolveTarget = (t?: string): string | undefined => {
+        if (!t || t === 'current') return ctx.channelTarget as string | undefined;
+        return t;
       };
 
       // Validate platform availability
@@ -113,19 +131,44 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
         switch (p.action) {
           // ─── send ──────────────────────────────────────────────
           case 'send': {
-            if (!p.target) return { output: '', success: false, error: 'target (channel/chat ID) is required for send' };
-            if (!p.message) return { output: '', success: false, error: 'message content is required for send' };
+            const target = resolveTarget(p.target);
+            if (!target) return { output: '', success: false, error: 'target (channel/chat ID) is required for send — or use "current" to send to the active channel' };
+            if (!p.message && !p.media) return { output: '', success: false, error: 'message or media is required for send' };
 
             if (p.platform === 'discord') {
-              const msgId = await discord!.sendToChannel(p.target, p.message);
+              if (p.media) {
+                const isUrl = /^https?:\/\//i.test(p.media);
+                const attachments: import('../channels/channel.js').Attachment[] = [];
+                if (isUrl) {
+                  attachments.push({ type: 'file', url: p.media, filename: basename(new URL(p.media).pathname) || 'attachment' });
+                } else {
+                  const data = await readFile(p.media);
+                  attachments.push({ type: 'file', data, filename: basename(p.media) || 'attachment' });
+                }
+
+                const msgId = await discord!.sendAndGetId!({
+                  target,
+                  content: p.message ?? '',
+                  attachments,
+                });
+                return {
+                  output: JSON.stringify({ sent: true, platform: 'discord', channelId: target, messageId: msgId, attached: true }),
+                  success: true,
+                };
+              }
+
+              const msgId = await discord!.sendToChannel(target, p.message ?? '');
               return {
-                output: JSON.stringify({ sent: true, platform: 'discord', channelId: p.target, messageId: msgId }),
+                output: JSON.stringify({ sent: true, platform: 'discord', channelId: target, messageId: msgId }),
                 success: true,
               };
             } else {
-              const msgId = await telegram!.sendToChat(p.target, p.message);
+              if (p.media) {
+                return { output: '', success: false, error: 'media attachments are currently supported for Discord only' };
+              }
+              const msgId = await telegram!.sendToChat(target, p.message ?? '');
               return {
-                output: JSON.stringify({ sent: true, platform: 'telegram', chatId: p.target, messageId: msgId }),
+                output: JSON.stringify({ sent: true, platform: 'telegram', chatId: target, messageId: msgId }),
                 success: true,
               };
             }
