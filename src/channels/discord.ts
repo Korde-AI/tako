@@ -107,13 +107,13 @@ export class DiscordChannel implements Channel {
       if (this.guilds && message.guild && !this.guilds.has(message.guild.id)) return;
 
       // ─── Mention-based routing ─────────────────────────────────────
-      // ALL bots (main and agent) require @mention in guild channels.
-      // DMs always go through. This prevents agent bots from responding
-      // to messages not addressed to them in shared servers.
+      // In guild channels, require an explicit textual @mention of THIS bot.
+      // DMs always go through regardless.
       const myBotId = this.client?.user?.id;
       if (myBotId && message.guild) {
-        if (!message.mentions.has(myBotId)) {
-          return; // Not mentioned — ignore
+        const explicitMention = message.content.includes(`<@${myBotId}>`) || message.content.includes(`<@!${myBotId}>`);
+        if (!explicitMention) {
+          return; // Not explicitly addressed to this bot
         }
       }
 
@@ -308,7 +308,7 @@ export class DiscordChannel implements Channel {
     const safeContent = scanSecrets(msg.content);
 
     const sendable = channel as unknown as { send: (opts: Record<string, unknown>) => Promise<unknown> };
-    await this.sendChunks(sendable, safeContent, msg.replyTo);
+    await this.sendChunks(sendable, safeContent, msg.replyTo, msg.attachments);
   }
 
   /** Send message chunks to a text-based channel with retry. */
@@ -316,12 +316,29 @@ export class DiscordChannel implements Channel {
     channel: { send: (opts: Record<string, unknown>) => Promise<unknown> },
     content: string,
     replyTo?: string,
+    attachments?: import('./channel.js').Attachment[],
   ): Promise<void> {
     const chunks = this.splitMessage(content);
     for (let i = 0; i < chunks.length; i++) {
-      const opts = {
+      const isLast = i === chunks.length - 1;
+
+      // Build discord.js file attachment objects (only on last chunk)
+      const files = isLast && attachments?.length
+        ? attachments.map((a) => {
+            if (a.data) {
+              return { attachment: a.data, name: a.filename ?? 'file' };
+            }
+            if (a.url) {
+              return { attachment: a.url, name: a.filename ?? 'file' };
+            }
+            return null;
+          }).filter(Boolean)
+        : [];
+
+      const opts: Record<string, unknown> = {
         content: chunks[i],
         ...(i === 0 && replyTo ? { reply: { messageReference: replyTo } } : {}),
+        ...(files.length ? { files } : {}),
       };
       await withRetry(
         () => channel.send(opts) as Promise<unknown>,
@@ -339,11 +356,20 @@ export class DiscordChannel implements Channel {
       throw new Error(`[discord] Cannot send to channel ${msg.target}`);
     }
 
+    const files = msg.attachments?.length
+      ? msg.attachments.map((a) => {
+          if (a.data) return { attachment: a.data, name: a.filename ?? 'file' };
+          if (a.url) return { attachment: a.url, name: a.filename ?? 'file' };
+          return null;
+        }).filter(Boolean)
+      : [];
+
     const sendable = channel as unknown as { send: (opts: Record<string, unknown>) => Promise<{ id: string }> };
     const sent = await withRetry(
       () => sendable.send({
         content: msg.content,
         ...(msg.replyTo ? { reply: { messageReference: msg.replyTo } } : {}),
+        ...(files.length ? { files } : {}),
       }),
       DISCORD_RETRY,
       'sendAndGetId',
