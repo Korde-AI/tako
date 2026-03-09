@@ -15,6 +15,7 @@
 
 import type { Tool, ToolContext, ToolResult } from './tool.js';
 import { checkNetworkPolicy } from '../core/security.js';
+import { NetworkPolicy } from '../core/network-policy.js';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -140,6 +141,18 @@ export function createBrowserTools(config: BrowserConfig): Tool[] {
       try {
         const page = await manager.getPage();
         await page.goto(url, { waitUntil: 'domcontentloaded' });
+
+        // SSRF protection: check final URL after redirects against network policy
+        const finalUrl = page.url();
+        if (finalUrl && finalUrl !== url) {
+          const redirectCheck = checkNetworkPolicy(finalUrl);
+          if (redirectCheck) {
+            // Redirected to a blocked destination — navigate away and report error
+            await page.goto('about:blank').catch(() => {});
+            return { output: '', success: false, error: `Blocked: redirect landed on restricted URL: ${redirectCheck}` };
+          }
+        }
+
         const title = await page.title();
         return { output: `Navigated to ${url} — "${title}"`, success: true };
       } catch (err) {
