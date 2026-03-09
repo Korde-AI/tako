@@ -8,7 +8,7 @@
 import { exec as execCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, writeFile, mkdir, rm, access } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve, normalize } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 
@@ -45,8 +45,22 @@ export class SkillMarketplace {
   private metadataPath: string;
 
   constructor(installDir?: string) {
-    this.installDir = installDir ?? join(homedir(), '.tako', 'skills');
+    this.installDir = resolve(installDir ?? join(homedir(), '.tako', 'skills'));
     this.metadataPath = join(homedir(), '.tako', 'installed-skills.json');
+  }
+
+  /**
+   * Validate that a resolved path is safely within the skills install directory.
+   * Prevents path traversal attacks from skill names like "../../../etc".
+   */
+  private validateInstallPath(destPath: string): void {
+    const resolved = resolve(destPath);
+    const normalizedRoot = resolve(this.installDir);
+    if (!resolved.startsWith(normalizedRoot + '/') && resolved !== normalizedRoot) {
+      throw new Error(
+        `Path traversal blocked: "${destPath}" resolves outside skills directory "${normalizedRoot}"`,
+      );
+    }
   }
 
   /**
@@ -91,7 +105,16 @@ export class SkillMarketplace {
     }
 
     const name = repo.split('/')[1] ?? repo;
-    const destPath = join(this.installDir, name);
+
+    // Sanitize skill name — reject names with path traversal components
+    if (name.includes('..') || name.includes('/') || name.includes('\\') || name.includes('\0')) {
+      throw new Error(`Invalid skill name: "${name}" contains path traversal characters`);
+    }
+
+    const destPath = resolve(this.installDir, name);
+
+    // Validate the destination path is within the skills directory
+    this.validateInstallPath(destPath);
 
     // Clone the repo
     await mkdir(this.installDir, { recursive: true });
