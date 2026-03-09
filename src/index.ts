@@ -59,6 +59,7 @@ import { PromptBuilder } from './core/prompt.js';
 import { ContextManager } from './core/context.js';
 import { SessionManager } from './gateway/session.js';
 import { Gateway } from './gateway/gateway.js';
+import { SessionCompactor } from './gateway/compaction.js';
 import { TakoHookSystem } from './hooks/hooks.js';
 import { HybridMemoryStore } from './memory/hybrid.js';
 import { createEmbeddingProvider } from './memory/embeddings.js';
@@ -636,9 +637,19 @@ async function runStart(): Promise<void> {
   const typingManager = new TypingManager(config.typing ?? { enabled: true, intervalMs: 5000 });
   const reactionManager = new ReactionManager(config.reactions ?? { enabled: true });
 
+  // Session compactor — auto-compresses context when it grows too large.
+  // Shared across all agent loops so every agent benefits from compaction.
+  const sessionCompactor = new SessionCompactor(
+    config.session,
+    contextManager,
+    sessions,
+    failoverProvider,
+    hooks,
+  );
+
   // Agent loop with skill loader for dynamic injection
   const agentLoop = new AgentLoop(
-    { provider: failoverProvider, toolRegistry, promptBuilder, contextManager, hooks, skillLoader, skillCommandSpecs, model: config.providers.primary, workspaceRoot: config.memory.workspace, retryQueue, typingManager, reactionManager, streamingConfig: config.agent.streaming },
+    { provider: failoverProvider, toolRegistry, promptBuilder, contextManager, hooks, skillLoader, skillCommandSpecs, model: config.providers.primary, workspaceRoot: config.memory.workspace, retryQueue, typingManager, reactionManager, streamingConfig: config.agent.streaming, compactor: sessionCompactor },
     {
       timeout: config.agent.timeout,
       ...(config.agent.maxOutputChars != null && { maxOutputChars: config.agent.maxOutputChars }),
@@ -707,6 +718,7 @@ async function runStart(): Promise<void> {
         typingManager,
         reactionManager,
         streamingConfig: config.agent.streaming,
+        compactor: sessionCompactor,
       },
       {
         timeout: config.agent.timeout,
@@ -1686,7 +1698,16 @@ async function runStart(): Promise<void> {
     config.gateway.port = parseInt(process.env['TAKO_GATEWAY_PORT'], 10);
   }
 
-  const gateway = new Gateway(config.gateway, { sessions, agentLoop, hooks, sandboxManager, retryQueue });
+  const gateway = new Gateway(config.gateway, {
+    sessions,
+    agentLoop,
+    hooks,
+    sandboxManager,
+    retryQueue,
+    sessionConfig: config.session,
+    contextManager,
+    provider: failoverProvider,
+  });
   await gateway.start();
 
   // Set status info for TUI clients
@@ -1803,7 +1824,17 @@ async function runStart(): Promise<void> {
 
   const idleSweepTimer = setInterval(async () => {
     const expired = sessions.sweepIdle();
+    let archivedCount = 0;
     for (const session of expired) {
+      // Only auto-expire sub-agent sessions and ACP sessions.
+      // Never end user-initiated channel sessions (discord/telegram/cli) —
+      // those persist indefinitely and get compressed when context grows large.
+      const isSubAgent = session.metadata.isSubAgent as boolean | undefined;
+      const isAcp = session.metadata.isAcp as boolean | undefined;
+      if (!isSubAgent && !isAcp) {
+        continue; // skip — user session, leave it alive
+      }
+
       const channelType = session.metadata.channelType as string | undefined;
       const target = session.metadata.channelTarget as string | undefined;
       if (channelType && target) {
@@ -1816,9 +1847,10 @@ async function runStart(): Promise<void> {
         }
       }
       sessions.archiveSession(session.id);
+      archivedCount++;
     }
-    if (expired.length > 0) {
-      console.log(`[tako] Archived ${expired.length} idle session(s)`);
+    if (archivedCount > 0) {
+      console.log(`[tako] Archived ${archivedCount} idle sub-agent/ACP session(s)`);
     }
 
     // Sweep expired thread bindings (24h idle)

@@ -364,6 +364,14 @@ export class SessionManager {
       const session = this.sessions.get(sessionId);
       if (!session) continue;
 
+      // Skip user-initiated channel sessions — they should persist indefinitely.
+      // Only rotate sub-agent and ACP sessions which have a defined lifecycle.
+      const isSubAgent = session.metadata.isSubAgent as boolean | undefined;
+      const isAcp = session.metadata.isAcp as boolean | undefined;
+      if (!isSubAgent && !isAcp) {
+        continue; // user session — keep it alive, context compaction handles growth
+      }
+
       // Flush pending writes
       if (this.dirty.has(sessionId)) {
         await this.appendToJSONL(session);

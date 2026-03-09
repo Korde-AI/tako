@@ -1,6 +1,6 @@
 {
   "name": "@shuyhere/takotako",
-  "version": "0.0.2",
+  "version": "0.0.21",
   "description": "Agent-as-CPU OS: minimal core + pluggable skill arms",
   "type": "module",
   "main": "dist/index.js",
