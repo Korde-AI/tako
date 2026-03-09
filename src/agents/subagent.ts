@@ -100,8 +100,8 @@ export interface SubAgentCompletionEvent {
 
 export type CompletionHandler = (event: SubAgentCompletionEvent) => void;
 
-/** Default timeout: 5 minutes for run mode, 0 (no timeout) for session mode. */
-const DEFAULT_RUN_TIMEOUT_MS = 300_000;
+/** Default timeout: 10 minutes for run mode, 0 (no timeout) for session mode. */
+const DEFAULT_RUN_TIMEOUT_MS = 600_000;
 
 /** Serialized run entry for persistence. */
 interface SerializedRun {
