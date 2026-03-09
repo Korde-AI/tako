@@ -534,8 +534,9 @@ async function runStart(): Promise<void> {
   configureExecSafety({
     workspaceRoot: config.memory.workspace,
     workDir: process.cwd(),
-    maxTimeout: config.tools.exec?.timeout ?? 120_000,
-    defaultTimeout: 30_000,
+    // Allow long-running ACP/bootstrap commands by default (up to 5 min)
+    maxTimeout: config.tools.exec?.timeout ?? 300_000,
+    defaultTimeout: 120_000,
     maxOutputSize: config.tools.exec?.maxOutputSize ?? 1024 * 1024,
   });
 
@@ -779,17 +780,20 @@ async function runStart(): Promise<void> {
       content: announcement,
     });
 
-    // Deliver through the channel that created this session
-    const channelType = parentSession.metadata.channelType as string | undefined;
-    const channelTarget = parentSession.metadata.channelTarget as string | undefined;
+    // Deliver through the originating channel/thread.
+    const channelType = event.announceChannelType || parentSession.metadata.channelType as string | undefined;
+    const channelTarget = event.announceChannelTarget || parentSession.metadata.channelTarget as string | undefined;
     if (channelType && channelTarget) {
       const channel = channels.find((ch) => ch.id === channelType);
-      if (channel) {
+      const isLikelyDiscordSnowflake = /^\d{16,22}$/.test(channelTarget);
+      if (channel && (channelType !== 'discord' || isLikelyDiscordSnowflake)) {
         try {
           await channel.send({ content: announcement, target: channelTarget });
         } catch (err) {
-          console.error(`[subagent] Failed to deliver completion to ${channelType}: ${err instanceof Error ? err.message : err}`);
+          console.error(`[subagent] Failed to deliver completion to ${channelType}:${channelTarget}: ${err instanceof Error ? err.message : err}`);
         }
+      } else if (channelType === 'discord' && !isLikelyDiscordSnowflake) {
+        console.warn(`[subagent] Skipping invalid Discord target for completion: ${channelTarget}`);
       }
     }
 
@@ -1223,6 +1227,7 @@ async function runStart(): Promise<void> {
   // ─── Message queue processor ────────────────────────────────────
   // Wire the processor callback now that wireChannel, sessions, and agentLoop exist.
   messageQueueProcessor = async (sessionId: string, messages: QueuedMessage[]) => {
+    try {
     const session = sessions.get(sessionId);
     if (!session) {
       console.warn(`[message-queue] Session ${sessionId} not found, dropping ${messages.length} messages`);
@@ -1331,6 +1336,9 @@ async function runStart(): Promise<void> {
     }
 
     sessions.markSessionDirty(sessionId);
+    } catch (err) {
+      console.error(`[message-queue] Unhandled processor error for session ${sessionId}:`, err instanceof Error ? err.message : err);
+    }
   };
 
   // ─── Media storage ────────────────────────────────────────────────

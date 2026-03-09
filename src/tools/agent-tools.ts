@@ -193,6 +193,8 @@ export function createAgentTools(deps: AgentToolsDeps): Tool[] {
           mode,
           label,
           model,
+          announceChannelType: ctx.channelType,
+          announceChannelTarget: ctx.channelTarget,
         }, agent);
 
         // ─── Thread binding (Discord only) ──────────────────────────
@@ -216,6 +218,9 @@ export function createAgentTools(deps: AgentToolsDeps): Tool[] {
             );
 
             threadInfo = { threadId: created.id, threadName: created.name };
+
+            // Route completion announcements to the created thread.
+            orchestrator.setAnnouncementTarget(run.id, 'discord', created.id);
 
             // Bind the thread to the sub-agent session
             if (threadBindings) {

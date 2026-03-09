@@ -43,6 +43,10 @@ export interface SpawnOptions {
   timeoutMs?: number;
   /** Whether to announce completion to the parent session. */
   announceCompletion?: boolean;
+  /** Optional explicit channel type for completion announcements. */
+  announceChannelType?: string;
+  /** Optional explicit channel target for completion announcements. */
+  announceChannelTarget?: string;
 }
 
 /** A tracked sub-agent run. */
@@ -77,6 +81,10 @@ export interface SubAgentRun {
   timeoutMs: number;
   /** Whether to announce completion to parent. */
   announceCompletion: boolean;
+  /** Explicit channel type for completion announcements (optional). */
+  announceChannelType?: string;
+  /** Explicit channel target for completion announcements (optional). */
+  announceChannelTarget?: string;
 }
 
 /** Completion event emitted when a sub-agent finishes. */
@@ -86,6 +94,8 @@ export interface SubAgentCompletionEvent {
   status: SubAgentStatus;
   result?: string;
   error?: string;
+  announceChannelType?: string;
+  announceChannelTarget?: string;
 }
 
 export type CompletionHandler = (event: SubAgentCompletionEvent) => void;
@@ -245,6 +255,8 @@ export class SubAgentOrchestrator {
       startedAt: new Date(),
       timeoutMs,
       announceCompletion: opts.announceCompletion ?? true,
+      announceChannelType: opts.announceChannelType,
+      announceChannelTarget: opts.announceChannelTarget,
     };
 
     this.runs.set(runId, run);
@@ -366,6 +378,16 @@ export class SubAgentOrchestrator {
     return this.sendMessage(runId, message);
   }
 
+  /** Update completion announcement target for an existing run. */
+  setAnnouncementTarget(runId: string, channelType: string, channelTarget: string): boolean {
+    const run = this.runs.get(runId);
+    if (!run) return false;
+    run.announceChannelType = channelType;
+    run.announceChannelTarget = channelTarget;
+    this.saveRuns().catch(() => {});
+    return true;
+  }
+
   /**
    * Clean up completed run-mode sessions.
    * Removes run records and their sessions after results have been retrieved.
@@ -419,6 +441,8 @@ export class SubAgentOrchestrator {
               completedAt: session.lastActiveAt,
               timeoutMs: 0,
               announceCompletion: false,
+              announceChannelType: undefined,
+              announceChannelTarget: undefined,
             };
             this.runs.set(runId, run);
             restored++;
@@ -449,6 +473,8 @@ export class SubAgentOrchestrator {
       status: run.status,
       result: run.result,
       error: run.error,
+      announceChannelType: run.announceChannelType,
+      announceChannelTarget: run.announceChannelTarget,
     };
 
     // Announce completion to parent session if configured
