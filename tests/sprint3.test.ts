@@ -92,7 +92,7 @@ describe('ReactionManager', () => {
     const rm = new ReactionManager();
     await rm.react(channel, 'chat-1', 'msg-1', 'received');
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].emoji, '👀');
+    assert.equal(calls[0].emoji, '👋');
   });
 
   it('calls removeReaction on channel', async () => {
@@ -111,7 +111,7 @@ describe('ReactionManager', () => {
     const rm = new ReactionManager();
     await rm.unreact(channel, 'chat-1', 'msg-1', 'processing');
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].emoji, '⏳');
+    assert.equal(calls[0].emoji, '🧑‍💻');
   });
 
   it('transitions between states', async () => {
@@ -129,8 +129,8 @@ describe('ReactionManager', () => {
 
     const rm = new ReactionManager();
     await rm.transition(channel, 'c', 'm', 'processing', 'completed');
-    assert.deepEqual(removed, ['⏳']);
-    assert.deepEqual(added, ['✅']);
+    assert.deepEqual(removed, ['🧑‍💻']);
+    assert.deepEqual(added, ['🎉']);
   });
 
   it('skips reaction when channel lacks addReaction', async () => {
@@ -164,11 +164,11 @@ describe('ReactionManager', () => {
 
   it('returns correct emoji for each state', () => {
     const rm = new ReactionManager();
-    assert.equal(rm.getEmoji('received'), '👀');
-    assert.equal(rm.getEmoji('processing'), '⏳');
-    assert.equal(rm.getEmoji('completed'), '✅');
-    assert.equal(rm.getEmoji('failed'), '❌');
-    assert.equal(rm.getEmoji('retrying'), '🔄');
+    assert.equal(rm.getEmoji('received'), '👋');
+    assert.equal(rm.getEmoji('processing'), '🧑‍💻');
+    assert.equal(rm.getEmoji('completed'), '🎉');
+    assert.equal(rm.getEmoji('failed'), '😕');
+    assert.equal(rm.getEmoji('retrying'), '🔁');
     assert.equal(rm.getEmoji('thinking'), '🤔');
   });
 });
