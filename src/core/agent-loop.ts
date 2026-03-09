@@ -166,6 +166,19 @@ export class AgentLoop {
   private sanitizeMessages(messages: ChatMessage[]): ChatMessage[] {
     const result: ChatMessage[] = [];
     for (const msg of messages) {
+      // Normalize null/undefined content — Gemini and some other providers
+      // return null content on tool-call-only assistant turns.
+      if (msg.content == null) {
+        // Keep the message if it has a role that carries other data (assistant with tool calls
+        // is represented as content=null in the OpenAI/LiteLLM wire format but will have
+        // tool_call_id or be reconstructed by repairToolPairing). Drop bare null-content
+        // user/system messages entirely.
+        if (msg.role === 'user' || msg.role === 'system') continue;
+        // For assistant/tool roles, coerce to empty string so downstream doesn't crash.
+        result.push({ ...msg, content: '' });
+        continue;
+      }
+
       // Skip empty text messages
       if (typeof msg.content === 'string' && !msg.content.trim() && msg.role !== 'system') continue;
 

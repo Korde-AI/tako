@@ -242,7 +242,12 @@ export class AcpSessionManager {
     const lines: string[] = [];
     for (const msg of sp.session.messages) {
       const ts = new Date(msg.timestamp).toISOString();
-      lines.push(`[${ts}] ${msg.role}: ${msg.content}`);
+      const contentStr = msg.content == null
+        ? ''
+        : typeof msg.content === 'string'
+          ? msg.content
+          : JSON.stringify(msg.content);
+      lines.push(`[${ts}] ${msg.role}: ${contentStr}`);
     }
     // Append any unbuffered output
     if (sp.outputBuffer.length > 0) {

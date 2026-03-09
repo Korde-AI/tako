@@ -309,9 +309,11 @@ export class LiteLLMProvider implements Provider {
 
     for (const msg of msgs) {
       if (msg.role === 'system') {
-        const text = typeof msg.content === 'string'
-          ? msg.content
-          : msg.content.filter((p) => p.type === 'text').map((p) => (p as { type: 'text'; text: string }).text).join('\n');
+        const text = msg.content == null
+          ? ''
+          : typeof msg.content === 'string'
+            ? msg.content
+            : msg.content.filter((p) => p.type === 'text').map((p) => (p as { type: 'text'; text: string }).text).join('\n');
         result.push({ role: 'system', content: text });
         continue;
       }
@@ -319,15 +321,19 @@ export class LiteLLMProvider implements Provider {
       if (msg.role === 'tool') {
         result.push({
           role: 'tool',
-          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+          content: msg.content == null
+            ? ''
+            : typeof msg.content === 'string'
+              ? msg.content
+              : JSON.stringify(msg.content),
           tool_call_id: msg.tool_call_id ?? '',
         });
         continue;
       }
 
       if (msg.role === 'assistant') {
-        if (typeof msg.content === 'string') {
-          result.push({ role: 'assistant', content: msg.content });
+        if (msg.content == null || typeof msg.content === 'string') {
+          result.push({ role: 'assistant', content: msg.content ?? '' });
         } else {
           let text = '';
           const toolCalls: LiteLLMToolCallMessage[] = [];
@@ -354,9 +360,11 @@ export class LiteLLMProvider implements Provider {
       }
 
       if (msg.role === 'user') {
-        const text = typeof msg.content === 'string'
-          ? msg.content
-          : msg.content.filter((p) => p.type === 'text').map((p) => (p as { type: 'text'; text: string }).text).join('\n');
+        const text = msg.content == null
+          ? ''
+          : typeof msg.content === 'string'
+            ? msg.content
+            : msg.content.filter((p) => p.type === 'text').map((p) => (p as { type: 'text'; text: string }).text).join('\n');
         result.push({ role: 'user', content: text });
       }
     }
