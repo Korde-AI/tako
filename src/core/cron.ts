@@ -103,6 +103,11 @@ export type AgentTurnRunner = (message: string, model?: string) => Promise<strin
 export type SystemEventHandler = (text: string) => void;
 export type DeliveryHandler = (result: CronRunResult, delivery: CronDelivery) => void;
 
+/** Max number of catch-up jobs to run immediately on startup. */
+const MAX_CATCHUP_JOBS = 5;
+/** Delay between staggered catch-up jobs in ms. */
+const CATCHUP_STAGGER_MS = 30_000;
+
 export class CronScheduler {
   private jobs: CronJob[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -130,9 +135,44 @@ export class CronScheduler {
     if (opts.delivery) this.deliveryHandler = opts.delivery;
   }
 
-  /** Load jobs from disk and start the tick loop. */
+  /** Load jobs from disk and start the tick loop. Stagger missed catch-up jobs. */
   async start(): Promise<void> {
     await this.load();
+
+    // Catch-up: find all due jobs and stagger execution
+    const now = new Date();
+    const dueJobs = this.jobs.filter((j) => j.enabled && this.isDue(j, now));
+
+    if (dueJobs.length > 0) {
+      const immediate = dueJobs.slice(0, MAX_CATCHUP_JOBS);
+      const staggered = dueJobs.slice(MAX_CATCHUP_JOBS);
+
+      // Run first batch immediately
+      for (const job of immediate) {
+        try {
+          await this.executeJob(job);
+        } catch (err) {
+          console.error(`[cron] Catch-up job ${job.id} (${job.name}) failed:`, err instanceof Error ? err.message : err);
+        }
+      }
+
+      // Stagger remaining catch-up jobs
+      if (staggered.length > 0) {
+        console.log(`[cron] Staggering ${staggered.length} remaining catch-up jobs (${CATCHUP_STAGGER_MS}ms apart)`);
+        for (let i = 0; i < staggered.length; i++) {
+          const job = staggered[i];
+          const delay = (i + 1) * CATCHUP_STAGGER_MS;
+          setTimeout(async () => {
+            try {
+              await this.executeJob(job);
+            } catch (err) {
+              console.error(`[cron] Staggered catch-up job ${job.id} (${job.name}) failed:`, err instanceof Error ? err.message : err);
+            }
+          }, delay);
+        }
+      }
+    }
+
     this.timer = setInterval(() => this.tick(), this.tickIntervalMs);
     const active = this.jobs.filter((j) => j.enabled).length;
     if (active > 0) {
