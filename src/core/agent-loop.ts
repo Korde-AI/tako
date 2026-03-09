@@ -887,9 +887,42 @@ export class AgentLoop {
           });
         }
 
+        const toolOutput = this.truncateToolResult(result.output);
+
+        // Detect "[Tool result missing]" pattern — stalled execution environment.
+        // After N consecutive missing results, bail out of the tool loop entirely.
+        if (this.deps.toolLoopDetector && toolOutput.includes('[Tool result missing]')) {
+          const bailWarning = this.deps.toolLoopDetector.recordMissingResult(session.id, tc.name);
+          if (bailWarning) {
+            const toolMsg: ChatMessage = {
+              role: 'tool',
+              content: toolOutput,
+              tool_call_id: tc.id,
+            };
+            session.messages.push(toolMsg);
+            messages.push(toolMsg);
+
+            const warnMsg: ChatMessage = { role: 'system', content: bailWarning };
+            session.messages.push(warnMsg);
+            messages.push(warnMsg);
+
+            // Force the loop to end after this tool — push remaining tool results
+            // as synthetic missing entries, then break.
+            for (const remaining of pendingToolCalls.slice(pendingToolCalls.indexOf(tc) + 1)) {
+              session.messages.push({
+                role: 'tool',
+                content: '[Tool result missing — execution aborted due to stall]',
+                tool_call_id: remaining.id,
+              });
+            }
+            pendingToolCalls = [];
+            break;
+          }
+        }
+
         const toolMsg: ChatMessage = {
           role: 'tool',
-          content: this.truncateToolResult(result.output),
+          content: toolOutput,
           tool_call_id: tc.id,
         };
         session.messages.push(toolMsg);

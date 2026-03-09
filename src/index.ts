@@ -629,6 +629,11 @@ async function runStart(): Promise<void> {
   // Retry queue for failed messages (all fallbacks exhausted)
   const retryQueue = new RetryQueue(config.retryQueue);
 
+  // Track active processing sessions to detect concurrent runs.
+  // If a session is already being processed, new messages get a "busy" reply
+  // rather than silently piling up for potentially hours.
+  const activeProcessingSessions = new Set<string>();
+
   // Message queue for batching rapid inbound messages
   // The processor callback is wired after the agent loop is created (see below).
   let messageQueueProcessor: ((sessionId: string, messages: QueuedMessage[]) => Promise<void>) | null = null;
@@ -1235,6 +1240,30 @@ async function runStart(): Promise<void> {
       console.warn(`[message-queue] No channel ref for session ${sessionId}, processing without channel`);
     }
 
+    // ─── Concurrent run guard ────────────────────────────────────────
+    // If this session is already being processed (e.g. stuck in a long tool loop),
+    // don't silently queue the message — tell the user we're still working and
+    // re-enqueue so we don't lose the message entirely.
+    if (activeProcessingSessions.has(sessionId)) {
+      console.warn(`[message-queue] Session ${sessionId} already processing — sending busy notice`);
+      const target = (session.metadata?.channelTarget as string) ?? '';
+      const lastMsgId = messages[messages.length - 1]?.messageId;
+      if (channelRef && target) {
+        await channelRef.send({
+          target,
+          content: '⏳ Still working on a previous task — your message has been queued and I\'ll get to it right after.',
+          replyTo: lastMsgId,
+        }).catch(() => {});
+      }
+      // Re-enqueue with a short delay so it gets processed once the current run finishes
+      setTimeout(() => {
+        for (const m of messages) messageQueue.enqueue(sessionId, m);
+      }, 5_000);
+      return;
+    }
+
+    activeProcessingSessions.add(sessionId);
+
     const activeLoop = getAgentLoop(session.metadata?.agentId as string | undefined);
     const repaired = sanitizeSessionMessages(session);
     if (repaired > 0) {
@@ -1255,35 +1284,49 @@ async function runStart(): Promise<void> {
     const channelTarget = (session.metadata?.channelTarget as string) ?? '';
     const target = channelTarget;
 
-    // Prepend sender context for merged messages
-    const userMessage = merged;
+    // Per-turn hard timeout — if the agent loop runs longer than this, abort it
+    // so new inbound messages aren't blocked for hours.
+    const TURN_TIMEOUT_MS = (config.agent?.turnTimeoutSeconds ?? 300) * 1000;
 
+    const userMessage = merged;
     let response = '';
     let hadError = false;
+
     try {
-      for await (const chunk of activeLoop.run(session, userMessage)) {
-        response += chunk;
-      }
+      // Race the agent loop against a hard timeout
+      const loopPromise = (async () => {
+        for await (const chunk of activeLoop.run(session, userMessage)) {
+          response += chunk;
+        }
+      })();
+
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Turn timeout after ${TURN_TIMEOUT_MS / 1000}s`)), TURN_TIMEOUT_MS),
+      );
+
+      await Promise.race([loopPromise, timeoutPromise]);
     } catch (err) {
       hadError = true;
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[message-queue] Error processing batch for session ${sessionId}: ${errMsg}`);
       if (!response) response = `⚠️ Error: ${errMsg.slice(0, 500)}`;
+    } finally {
+      activeProcessingSessions.delete(sessionId);
     }
 
     // Send response through the channel
     if (channelRef && target && response.trim()) {
-      const lastMsgId = messages[messages.length - 1]?.messageId;
+      const replyMsgId = messages[messages.length - 1]?.messageId;
       try {
-        await channelRef.send({ target, content: response.trim(), replyTo: lastMsgId });
+        await channelRef.send({ target, content: response.trim(), replyTo: replyMsgId });
       } catch (sendErr) {
         console.error(`[message-queue] Send error:`, sendErr instanceof Error ? sendErr.message : sendErr);
       }
 
-      // Queue reaction lifecycle: ⏳ -> ✅/⚠️
-      if (lastMsgId) {
-        if (channelRef.removeReaction) channelRef.removeReaction(target, lastMsgId, '💭').catch(() => {});
-        if (channelRef.addReaction) channelRef.addReaction(target, lastMsgId, hadError ? '😅' : '👍').catch(() => {});
+      // Queue reaction lifecycle: 💭 -> ✅/⚠️
+      if (replyMsgId) {
+        if (channelRef.removeReaction) channelRef.removeReaction(target, replyMsgId, '💭').catch(() => {});
+        if (channelRef.addReaction) channelRef.addReaction(target, replyMsgId, hadError ? '😅' : '👍').catch(() => {});
       }
     }
 

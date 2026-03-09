@@ -41,6 +41,29 @@ export class ToolLoopDetector {
   }
 
   /**
+   * Record a missing tool result and check if we should bail.
+   * Gemini/LiteLLM sometimes returns "[Tool result missing]" strings as tool output.
+   * After N consecutive missing results, we inject a warning and break the loop.
+   */
+  recordMissingResult(sessionId: string, toolName: string): string | null {
+    if (!this.config.enabled) return null;
+
+    const key = `missing:${sessionId}`;
+    const records = this.history.get(key) ?? [];
+    records.push({ toolName, argsHash: 'missing', timestamp: Date.now() });
+    if (records.length > this.config.windowSize) {
+      records.splice(0, records.length - this.config.windowSize);
+    }
+    this.history.set(key, records);
+
+    const missingCount = records.filter((r) => r.argsHash === 'missing').length;
+    if (missingCount >= this.config.maxRepetitions) {
+      return `⚠️ Multiple tool calls returned "[Tool result missing]" (${missingCount} times). This usually means the execution environment is stalled. Stopping the current task to avoid an infinite loop. Please let the user know and ask for guidance.`;
+    }
+    return null;
+  }
+
+  /**
    * Record a tool call and check for loops.
    * Returns a warning message if a loop is detected, null otherwise.
    */

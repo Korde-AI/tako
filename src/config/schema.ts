@@ -373,6 +373,12 @@ export interface AgentConfig {
   typingIntervalSeconds?: number;
   /** Response streaming configuration */
   streaming?: StreamingConfig;
+  /**
+   * Hard timeout for a single queue-processed turn in seconds (default: 300).
+   * If the agent loop runs longer than this, it is aborted so new inbound
+   * messages are not blocked indefinitely by a stalled tool loop.
+   */
+  turnTimeoutSeconds?: number;
 }
 
 /** Response streaming configuration. */
