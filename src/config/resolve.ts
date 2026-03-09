@@ -154,6 +154,55 @@ async function loadTakoEnv(): Promise<void> {
 }
 
 /**
+ * Validate critical config fields after merging.
+ * Throws on invalid config instead of silently using permissive defaults.
+ */
+function validateConfig(config: TakoConfig, filePath: string | null): void {
+  const errors: string[] = [];
+
+  // Validate providers
+  if (!config.providers || typeof config.providers !== 'object') {
+    errors.push('providers section is missing or invalid');
+  }
+
+  // Validate gateway port
+  if (config.gateway?.port != null) {
+    const port = config.gateway.port;
+    if (typeof port !== 'number' || port < 1 || port > 65535) {
+      errors.push(`gateway.port must be 1-65535, got: ${port}`);
+    }
+  }
+
+  // Validate security section
+  if (config.security) {
+    const validModes = ['blocklist', 'allowlist'];
+    if (config.security.network?.mode && !validModes.includes(config.security.network.mode)) {
+      errors.push(`security.network.mode must be one of ${validModes.join(', ')}, got: ${config.security.network.mode}`);
+    }
+    const validSanitizerModes = ['warn', 'strip', 'block'];
+    if (config.security.sanitizer?.mode && !validSanitizerModes.includes(config.security.sanitizer.mode)) {
+      errors.push(`security.sanitizer.mode must be one of ${validSanitizerModes.join(', ')}, got: ${config.security.sanitizer.mode}`);
+    }
+    const validValidationLevels = ['off', 'warn', 'strict'];
+    if (config.security.toolValidation?.level && !validValidationLevels.includes(config.security.toolValidation.level)) {
+      errors.push(`security.toolValidation.level must be one of ${validValidationLevels.join(', ')}, got: ${config.security.toolValidation.level}`);
+    }
+  }
+
+  // Validate agent timeout
+  if (config.agent?.timeout != null && (typeof config.agent.timeout !== 'number' || config.agent.timeout <= 0)) {
+    errors.push(`agent.timeout must be a positive number, got: ${config.agent.timeout}`);
+  }
+
+  if (errors.length > 0) {
+    const source = filePath ? ` (from ${filePath})` : '';
+    throw new Error(
+      `Config validation failed${source}:\n  - ${errors.join('\n  - ')}`,
+    );
+  }
+}
+
+/**
  * Load and resolve the Tako config.
  */
 export async function resolveConfig(configPath?: string): Promise<TakoConfig> {
@@ -167,12 +216,19 @@ export async function resolveConfig(configPath?: string): Promise<TakoConfig> {
     try {
       const raw = await readFile(filePath, 'utf-8');
       fileConfig = JSON.parse(raw) as Partial<TakoConfig>;
-    } catch {
-      // Config file exists but is invalid — use defaults
+    } catch (err) {
+      // Config file exists but is invalid — fail-closed instead of silently falling back to defaults
+      throw new Error(
+        `Failed to load config from ${filePath}: ${err instanceof Error ? err.message : String(err)}. ` +
+        `Fix the config file or remove it to use defaults.`,
+      );
     }
   }
 
   const config = mergeConfig(DEFAULT_CONFIG, fileConfig);
+
+  // Validate critical config sections — fail-closed on invalid config
+  validateConfig(config, filePath);
 
   // Resolve workspace paths: never anchor to CWD.
   config.memory.workspace = resolveWorkspacePath(config.memory.workspace);
