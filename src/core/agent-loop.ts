@@ -131,17 +131,25 @@ export class AgentLoop {
    * Keeps first 80% and last 20% with a truncation marker in between.
    * This preserves error messages that typically appear at the end of output.
    */
-  private truncateToolResult(output: string): string {
+  private truncateToolResult(output: unknown): string {
+    const text = typeof output === 'string'
+      ? output
+      : output == null
+        ? ''
+        : (() => {
+            try { return JSON.stringify(output); } catch { return String(output); }
+          })();
+
     const maxChars = this.config.maxOutputChars ?? AgentLoop.MAX_TOOL_RESULT_CHARS;
-    if (output.length <= maxChars) return output;
+    if (text.length <= maxChars) return text;
 
     const marker = '\n\n[… truncated middle section …]\n\n';
     const available = maxChars - marker.length;
     const headSize = Math.floor(available * 0.8);
     const tailSize = available - headSize;
 
-    const head = output.slice(0, headSize);
-    const tail = output.slice(output.length - tailSize);
+    const head = text.slice(0, headSize);
+    const tail = text.slice(text.length - tailSize);
     return head + marker + tail;
   }
 
