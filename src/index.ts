@@ -1070,12 +1070,17 @@ async function runStart(): Promise<void> {
 
       // ─── Message queue: collect/debounce rapid messages ─────────
       if (messageQueue.getConfig().mode !== 'off' && channel.id !== 'cli' && channel.id !== 'tui') {
+        const queuedAttachments = msg.attachments?.length
+          ? await persistAttachments(msg.attachments)
+          : undefined;
+
         const queued = messageQueue.enqueue(session.id, {
           content: inboundText,
           channelId: msg.channelId,
           authorId: msg.author.id,
           timestamp: Date.now(),
           messageId: msg.id,
+          attachments: queuedAttachments,
         });
         if (queued) {
           // Immediate feedback while waiting for queue flush
@@ -1294,13 +1299,14 @@ async function runStart(): Promise<void> {
     const TURN_TIMEOUT_MS = (config.agent?.turnTimeoutSeconds ?? 300) * 1000;
 
     const userMessage = merged;
+    const mergedAttachments = messages.flatMap((m) => m.attachments ?? []);
     let response = '';
     let hadError = false;
 
     try {
       // Race the agent loop against a hard timeout
       const loopPromise = (async () => {
-        for await (const chunk of activeLoop.run(session, userMessage)) {
+        for await (const chunk of activeLoop.run(session, userMessage, mergedAttachments)) {
           response += chunk;
         }
       })();

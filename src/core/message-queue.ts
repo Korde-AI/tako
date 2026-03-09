@@ -27,6 +27,7 @@ export interface QueuedMessage {
   authorId: string;
   timestamp: number;
   messageId: string;
+  attachments?: Array<{ type: string; url?: string; filename?: string; mimeType?: string }>;
 }
 
 const DEFAULT_QUEUE_CONFIG: QueueConfig = {
