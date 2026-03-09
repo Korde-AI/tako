@@ -7,6 +7,8 @@
  */
 
 import { resolve, relative } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 // ─── Dangerous command patterns ──────────────────────────────────────
 
@@ -187,6 +189,82 @@ export class ExecSafety {
       }
     }
     return warnings;
+  }
+
+  // ─── Script content pinning (bun/deno run) ─────────────────────
+
+  /** Approved script hashes: command string → SHA-256 hex digest. */
+  private pinnedScripts = new Map<string, string>();
+
+  /**
+   * Extract the script file path from a bun/deno run command.
+   * Returns null if the command is not a script run command.
+   */
+  extractScriptPath(command: string): string | null {
+    const match = command.match(/\b(?:bun|deno)\s+run\s+([^\s;&|]+)/);
+    if (!match) return null;
+    const scriptPath = match[1];
+    // Skip URLs and flags
+    if (scriptPath.startsWith('-') || scriptPath.startsWith('http')) return null;
+    return resolve(this.options.workDir, scriptPath);
+  }
+
+  /**
+   * Compute SHA-256 hash of a file's contents.
+   * Returns null if the file cannot be read.
+   */
+  private hashFile(filePath: string): string | null {
+    try {
+      const content = readFileSync(filePath);
+      return createHash('sha256').update(content).digest('hex');
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Pin a script at approval time. Call this when the user approves
+   * a `bun run <file>` or `deno run <file>` command.
+   * Returns the hash, or null if the file couldn't be read.
+   */
+  pinScript(command: string): string | null {
+    const scriptPath = this.extractScriptPath(command);
+    if (!scriptPath) return null;
+    const hash = this.hashFile(scriptPath);
+    if (hash) {
+      this.pinnedScripts.set(command, hash);
+    }
+    return hash;
+  }
+
+  /**
+   * Verify a pinned script hasn't changed since approval.
+   * Returns true if safe to execute, false if tampered or missing.
+   * Returns true for non-script commands (no pinning needed).
+   */
+  verifyPinnedScript(command: string): { ok: boolean; reason?: string } {
+    const scriptPath = this.extractScriptPath(command);
+    if (!scriptPath) return { ok: true }; // Not a script command
+
+    const pinnedHash = this.pinnedScripts.get(command);
+    if (!pinnedHash) return { ok: true }; // Not pinned (legacy approval)
+
+    const currentHash = this.hashFile(scriptPath);
+    if (!currentHash) {
+      return { ok: false, reason: `Script file not found or unreadable: ${scriptPath}` };
+    }
+    if (currentHash !== pinnedHash) {
+      this.pinnedScripts.delete(command); // Invalidate the pin
+      return { ok: false, reason: `Script content changed after approval (${scriptPath}). Re-approval required.` };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Clear a pinned script (e.g. after execution or revocation).
+   */
+  clearPin(command: string): void {
+    this.pinnedScripts.delete(command);
   }
 
   /** Update the workspace root. */
