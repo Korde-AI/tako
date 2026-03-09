@@ -57,7 +57,7 @@ import { gitTools } from './tools/git.js';
 import { AgentLoop } from './core/agent-loop.js';
 import { PromptBuilder } from './core/prompt.js';
 import { ContextManager } from './core/context.js';
-import { SessionManager } from './gateway/session.js';
+import { SessionManager, type Session } from './gateway/session.js';
 import { Gateway } from './gateway/gateway.js';
 import { SessionCompactor } from './gateway/compaction.js';
 import { TakoHookSystem } from './hooks/hooks.js';
@@ -863,6 +863,27 @@ async function runStart(): Promise<void> {
     },
   });
 
+  // Best-effort repair for malformed persisted messages so one bad entry
+  // never poisons a whole session.
+  function sanitizeSessionMessages(session: Session): number {
+    let fixed = 0;
+    const cleaned: any[] = [];
+    for (const m of session.messages as any[]) {
+      if (!m || typeof m !== 'object') { fixed++; continue; }
+      if (typeof m.role !== 'string') { fixed++; continue; }
+      if (!('content' in m) || m.content == null) {
+        cleaned.push({ ...m, content: '' });
+        fixed++;
+        continue;
+      }
+      cleaned.push(m);
+    }
+    if (fixed > 0) {
+      session.messages = cleaned as any;
+    }
+    return fixed;
+  }
+
   // ─── Multi-channel routing ────────────────────────────────────────
 
   function getSession(msg: InboundMessage, channel?: Channel) {
@@ -1084,6 +1105,10 @@ async function runStart(): Promise<void> {
       // Use the correct agent loop — per-agent loops have their own PromptBuilder
       // (workspace/identity) but share the same provider (auth/API keys).
       const activeLoop = getAgentLoop(channel.agentId ?? session.metadata?.agentId as string | undefined);
+      const repaired = sanitizeSessionMessages(session);
+      if (repaired > 0) {
+        console.warn(`[session] Repaired ${repaired} malformed message(s) in ${session.id}`);
+      }
 
       try {
         // Set active channel for typing/reactions
@@ -1211,6 +1236,10 @@ async function runStart(): Promise<void> {
     }
 
     const activeLoop = getAgentLoop(session.metadata?.agentId as string | undefined);
+    const repaired = sanitizeSessionMessages(session);
+    if (repaired > 0) {
+      console.warn(`[message-queue] Repaired ${repaired} malformed message(s) in ${session.id}`);
+    }
 
     // Ensure loop has channel reference + latest message metadata for typing/reactions
     if (channelRef) {
