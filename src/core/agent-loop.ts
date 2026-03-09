@@ -166,6 +166,9 @@ export class AgentLoop {
   private sanitizeMessages(messages: ChatMessage[]): ChatMessage[] {
     const result: ChatMessage[] = [];
     for (const msg of messages) {
+      // Defensive: tolerate malformed history entries.
+      if (!msg || typeof msg !== 'object') continue;
+
       // Normalize null/undefined content — Gemini and some other providers
       // return null content on tool-call-only assistant turns.
       if (msg.content == null) {
@@ -213,6 +216,7 @@ export class AgentLoop {
 
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
+      if (!msg || typeof msg !== 'object') continue;
 
       if (msg.role !== 'assistant' || typeof msg.content === 'string') {
         // For tool results, verify they have a matching tool_use in a preceding assistant
