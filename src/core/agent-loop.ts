@@ -33,6 +33,7 @@ import { dispatchSkillCommand, type DispatchContext } from '../commands/dispatch
 import type { SkillCommandSpec } from '../commands/skill-commands.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import { TypingManager } from './typing.js';
+import { readFile } from 'node:fs/promises';
 import { ToolLoopDetector } from './tool-loop-detector.js';
 import type { UsageTracker } from './usage-tracker.js';
 import type { ThinkingManager } from './thinking.js';
@@ -53,6 +54,8 @@ export interface AgentLoopConfig {
   maxOutputChars: number;
   /** Max output tokens per API call (passed to provider as max_tokens) */
   maxTokens?: number;
+  /** Per-tool call hard timeout in ms (default 30000). Prevents a single stuck tool from blocking forever. */
+  toolCallTimeoutMs?: number;
 }
 
 const DEFAULT_LOOP_CONFIG: AgentLoopConfig = {
@@ -60,6 +63,7 @@ const DEFAULT_LOOP_CONFIG: AgentLoopConfig = {
   maxToolCalls: 50,
   maxTurns: 20,
   maxOutputChars: 50_000,
+  toolCallTimeoutMs: 30_000,
 };
 
 /** Dependencies injected into the agent loop. */
@@ -503,20 +507,33 @@ export class AgentLoop {
       const imageParts: import('../providers/provider.js').ContentPart[] = [];
       for (const a of imageAttachments) {
         try {
-          const resp = await fetch(a.url!);
-          if (resp.ok) {
-            const buffer = Buffer.from(await resp.arrayBuffer());
-            const mediaType = a.mimeType || resp.headers.get('content-type') || 'image/png';
-            imageParts.push({
-              type: 'image_base64',
-              media_type: mediaType,
-              data: buffer.toString('base64'),
-            });
+          let buffer: Buffer | null = null;
+          let mediaType = a.mimeType || 'image/png';
+          const source = a.url!;
+
+          if (source.startsWith('http://') || source.startsWith('https://')) {
+            const resp = await fetch(source);
+            if (!resp.ok) {
+              console.warn(`[agent-loop] Failed to fetch image ${source}: HTTP ${resp.status}`);
+              continue;
+            }
+            buffer = Buffer.from(await resp.arrayBuffer());
+            mediaType = a.mimeType || resp.headers.get('content-type') || mediaType;
+          } else if (source.startsWith('file://')) {
+            const filePath = new URL(source).pathname;
+            buffer = await readFile(filePath);
           } else {
-            console.warn(`[agent-loop] Failed to fetch image ${a.url}: HTTP ${resp.status}`);
+            // Local filesystem path persisted by media storage.
+            buffer = await readFile(source);
           }
+
+          imageParts.push({
+            type: 'image_base64',
+            media_type: mediaType,
+            data: buffer.toString('base64'),
+          });
         } catch (err) {
-          console.warn(`[agent-loop] Failed to fetch image ${a.url}:`, err instanceof Error ? err.message : err);
+          console.warn(`[agent-loop] Failed to load image ${a.url}:`, err instanceof Error ? err.message : err);
         }
       }
 
@@ -864,9 +881,20 @@ export class AgentLoop {
 
         const tool = toolRegistry.getTool(tc.name);
         let result: ToolResult;
+        const toolTimeoutMs = this.config.toolCallTimeoutMs ?? 30_000;
         try {
           if (tool) {
-            result = await tool.execute(tc.input, toolCtx);
+            // Race the tool against a hard timeout so a single stuck call
+            // cannot block the entire agent loop indefinitely.
+            result = await Promise.race([
+              tool.execute(tc.input, toolCtx),
+              new Promise<ToolResult>((_, reject) =>
+                setTimeout(
+                  () => reject(new Error(`Tool "${tc.name}" timed out after ${toolTimeoutMs}ms`)),
+                  toolTimeoutMs,
+                ),
+              ),
+            ]);
           } else {
             result = { output: `Unknown tool: ${tc.name}`, success: false };
           }
