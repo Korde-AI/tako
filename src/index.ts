@@ -325,6 +325,11 @@ Commands:
   message send       Send message to a channel
   message broadcast  Broadcast to all channels
 
+  acp list           List ACP sessions
+  acp logs <id>      Show ACP session logs
+  acp exec <a> <p>   One-shot ACP run (pi/claude/codex/opencode/gemini/kimi)
+  acp send <a> <p>   Persistent ACP session send
+
   skills list        List discovered skills
   skills install <n> Install a skill
   skills info <name> Show skill details
