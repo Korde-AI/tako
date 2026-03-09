@@ -940,13 +940,14 @@ async function runStart(): Promise<void> {
     deliveryQueue.registerChannel(channel);
     channel.onMessage(async (msg: InboundMessage) => {
       try {
+      const inboundText = typeof msg.content === 'string' ? msg.content : '';
       await hooks.emit('message_received', {
         event: 'message_received',
         data: { channelId: msg.channelId, authorId: msg.author.id, content: msg.content },
         timestamp: Date.now(),
       });
 
-      if (channel.id === 'cli' && (msg.content === '/quit' || msg.content === '/exit')) {
+      if (channel.id === 'cli' && (inboundText === '/quit' || inboundText === '/exit')) {
         await shutdown();
         process.exit(0);
       }
@@ -957,7 +958,7 @@ async function runStart(): Promise<void> {
       if (aclChannel !== 'cli' && aclChannel !== 'tui') {
         // Always let /claim through — it needs to reach the command registry
         // even when the bot is unclaimed (open mode) or when the user isn't on the allowlist yet.
-        const isClaimCommand = msg.content.trim().toLowerCase() === '/claim';
+        const isClaimCommand = inboundText.trim().toLowerCase() === '/claim';
         if (!isClaimCommand) {
           const allowed = await isUserAllowed(aclChannel, aclAgentId, msg.author.id);
           if (!allowed) return; // silently ignore
@@ -995,7 +996,7 @@ async function runStart(): Promise<void> {
       }
 
       // ─── Slash command handling (local, no LLM) ──────────────────
-      if (msg.content.trim().startsWith('/')) {
+      if (inboundText.trim().startsWith('/')) {
         const channelType = msg.channelId.split(':')[0] ?? 'cli';
         const channelTarget = msg.channelId.includes(':')
           ? msg.channelId.split(':').slice(1).join(':')
@@ -1008,7 +1009,7 @@ async function runStart(): Promise<void> {
         if (channel.removeReaction) channel.removeReaction(target, msg.id, '👋').catch(() => {});
 
         try {
-          const cmdResult = await commandRegistry.handle(msg.content, {
+          const cmdResult = await commandRegistry.handle(inboundText, {
             channelId: msg.channelId,
             authorId: msg.author.id,
             authorName: msg.author.name,
@@ -1040,7 +1041,7 @@ async function runStart(): Promise<void> {
       // ─── Message queue: collect/debounce rapid messages ─────────
       if (messageQueue.getConfig().mode !== 'off' && channel.id !== 'cli' && channel.id !== 'tui') {
         const queued = messageQueue.enqueue(session.id, {
-          content: msg.content,
+          content: inboundText,
           channelId: msg.channelId,
           authorId: msg.author.id,
           timestamp: Date.now(),
@@ -1078,7 +1079,7 @@ async function runStart(): Promise<void> {
       const senderPrefix = channel.id !== 'cli' && msg.author?.name
         ? `[From: ${msg.author.name}]\n`
         : '';
-      const userMessage = senderPrefix + msg.content;
+      const userMessage = senderPrefix + inboundText;
 
       // Use the correct agent loop — per-agent loops have their own PromptBuilder
       // (workspace/identity) but share the same provider (auth/API keys).
@@ -1151,7 +1152,7 @@ async function runStart(): Promise<void> {
         }
       } else {
         // Empty response — fallback
-        console.error(`[${channel.id}] Empty response for: "${msg.content.slice(0, 50)}" (session ${session.id}, msgs: ${session.messages.length})`);
+        console.error(`[${channel.id}] Empty response for: "${inboundText.slice(0, 50)}" (session ${session.id}, msgs: ${session.messages.length})`);
         const fallbackMsg = { target, content: '🤔 I processed your message but had nothing to say. Try rephrasing?', replyTo: msg.id };
         try {
           await channel.send(fallbackMsg);
@@ -1243,7 +1244,7 @@ async function runStart(): Promise<void> {
 
     // Send response through the channel
     if (channelRef && target && response.trim()) {
-      const lastMsgId = messages[messages.length - 1].messageId;
+      const lastMsgId = messages[messages.length - 1]?.messageId;
       try {
         await channelRef.send({ target, content: response.trim(), replyTo: lastMsgId });
       } catch (sendErr) {
