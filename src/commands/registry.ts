@@ -40,6 +40,7 @@ export interface CommandDeps {
   setQueueMode?: (mode: 'off' | 'collect' | 'debounce') => void;
   getQueueStatus?: () => Array<{ sessionId: string; depth: number; oldestMs: number }>;
   usageTracker?: UsageTracker;
+  runAcpCommand?: (args: string, ctx: CommandContext) => Promise<string>;
 }
 
 interface Command {
@@ -192,6 +193,7 @@ export class CommandRegistry {
           usage: '/usage [cost|off|tokens|full] — Show token/cost usage',
           approve: '/approve <id> <allow|deny|allow-always> — Resolve exec approval request',
           claim: '/claim — Claim ownership of this bot (first user wins, locks to allowlist)',
+          acp: '/acp <agent> <prompt> — Route prompt to ACP harness (or /acp help)',
         };
 
         if (target) {
@@ -418,6 +420,20 @@ export class CommandRegistry {
 
         // Race condition — someone else claimed between the check and the write
         return '🔒 **Already claimed** by someone else. Too slow! 😄';
+      },
+    });
+
+    this.register({
+      name: 'acp',
+      description: 'Route commands to ACP harness agents (pi/claude/codex/opencode/gemini/kimi).',
+      handler: async (args, ctx) => {
+        if (!this.deps.runAcpCommand) {
+          return [
+            'ACP command routing is not configured in this runtime.',
+            'Use CLI fallback: `tako acp help`',
+          ].join('\n');
+        }
+        return this.deps.runAcpCommand(args, ctx);
       },
     });
 

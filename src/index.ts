@@ -833,6 +833,34 @@ async function runStart(): Promise<void> {
     getQueueMode: () => messageQueue.getConfig().mode,
     setQueueMode: (mode: 'off' | 'collect' | 'debounce') => messageQueue.setMode(mode),
     getQueueStatus: () => messageQueue.status(),
+    runAcpCommand: async (args, ctx) => {
+      const tool = toolRegistry.getTool('acp_router');
+      if (!tool) {
+        return [
+          'ACP router tool is not loaded.',
+          'Ensure the `acp` skill is installed/enabled, then retry `/acp help`.',
+        ].join('\n');
+      }
+
+      const channelType = ctx.channelId.includes(':') ? ctx.channelId.split(':')[0] : ctx.channelId;
+      const channelTarget = ctx.channelId.includes(':') ? ctx.channelId.split(':').slice(1).join(':') : ctx.channelId;
+      const result = await tool.execute(
+        { input: args },
+        {
+          sessionId: ctx.session.id,
+          workDir: config.memory.workspace,
+          workspaceRoot: config.memory.workspace,
+          agentId: ctx.agentId,
+          channelType,
+          channelTarget,
+        },
+      );
+
+      if (!result.success) {
+        return result.error ? `ACP error: ${result.error}` : 'ACP command failed.';
+      }
+      return result.output || 'ACP command executed.';
+    },
   });
 
   // ─── Multi-channel routing ────────────────────────────────────────
