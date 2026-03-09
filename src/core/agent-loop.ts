@@ -66,6 +66,25 @@ const DEFAULT_LOOP_CONFIG: AgentLoopConfig = {
   toolCallTimeoutMs: 30_000,
 };
 
+function detectImageMediaType(buffer: Buffer, fallback = 'image/png'): string {
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (buffer.length >= 8
+    && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47
+    && buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A) return 'image/png';
+  // JPEG: FF D8 FF
+  if (buffer.length >= 3 && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) return 'image/jpeg';
+  // GIF87a / GIF89a
+  if (buffer.length >= 6) {
+    const sig = buffer.subarray(0, 6).toString('ascii');
+    if (sig === 'GIF87a' || sig === 'GIF89a') return 'image/gif';
+  }
+  // WEBP: RIFF....WEBP
+  if (buffer.length >= 12
+    && buffer.subarray(0, 4).toString('ascii') === 'RIFF'
+    && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return fallback;
+}
+
 /** Dependencies injected into the agent loop. */
 export interface AgentLoopDeps {
   /** LLM provider for inference */
@@ -508,7 +527,7 @@ export class AgentLoop {
       for (const a of imageAttachments) {
         try {
           let buffer: Buffer | null = null;
-          let mediaType = a.mimeType || 'image/png';
+          let mediaTypeHint = a.mimeType || 'image/png';
           const source = a.url!;
 
           if (source.startsWith('http://') || source.startsWith('https://')) {
@@ -518,7 +537,7 @@ export class AgentLoop {
               continue;
             }
             buffer = Buffer.from(await resp.arrayBuffer());
-            mediaType = a.mimeType || resp.headers.get('content-type') || mediaType;
+            mediaTypeHint = a.mimeType || resp.headers.get('content-type') || mediaTypeHint;
           } else if (source.startsWith('file://')) {
             const filePath = new URL(source).pathname;
             buffer = await readFile(filePath);
@@ -527,6 +546,7 @@ export class AgentLoop {
             buffer = await readFile(source);
           }
 
+          const mediaType = detectImageMediaType(buffer, mediaTypeHint);
           imageParts.push({
             type: 'image_base64',
             media_type: mediaType,
