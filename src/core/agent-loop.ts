@@ -123,6 +123,28 @@ export class AgentLoop {
     this.config = { ...DEFAULT_LOOP_CONFIG, ...config };
   }
 
+  /** Max tool result size before truncation (default 50KB). */
+  private static readonly MAX_TOOL_RESULT_CHARS = 50_000;
+
+  /**
+   * Truncate oversized tool results using head+tail strategy.
+   * Keeps first 80% and last 20% with a truncation marker in between.
+   * This preserves error messages that typically appear at the end of output.
+   */
+  private truncateToolResult(output: string): string {
+    const maxChars = this.config.maxOutputChars ?? AgentLoop.MAX_TOOL_RESULT_CHARS;
+    if (output.length <= maxChars) return output;
+
+    const marker = '\n\n[… truncated middle section …]\n\n';
+    const available = maxChars - marker.length;
+    const headSize = Math.floor(available * 0.8);
+    const tailSize = available - headSize;
+
+    const head = output.slice(0, headSize);
+    const tail = output.slice(output.length - tailSize);
+    return head + marker + tail;
+  }
+
   /** Switch the active model at runtime. */
   setModel(modelRef: string): void {
     this.deps.model = modelRef;
@@ -842,7 +864,7 @@ export class AgentLoop {
 
         const toolMsg: ChatMessage = {
           role: 'tool',
-          content: result.output,
+          content: this.truncateToolResult(result.output),
           tool_call_id: tc.id,
         };
         session.messages.push(toolMsg);
