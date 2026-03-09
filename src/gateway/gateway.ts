@@ -238,57 +238,73 @@ export class Gateway {
     });
   }
 
-  /** Stop the gateway cleanly. */
-  async stop(): Promise<void> {
-    for (const client of this.clients.values()) {
-      client.ws.close(1001, 'Gateway shutting down');
+  /** Default drain timeout in ms before forcing exit. */
+  static readonly DRAIN_TIMEOUT_MS = 25_000;
+
+  /** Stop the gateway cleanly with a drain timeout. */
+  async stop(drainTimeoutMs: number = Gateway.DRAIN_TIMEOUT_MS): Promise<void> {
+    let drainTimedOut = false;
+
+    // Set up a drain timeout — if shutdown takes too long, force exit with code 1
+    const drainTimer = setTimeout(() => {
+      drainTimedOut = true;
+      console.error(`[gateway] Drain timeout (${drainTimeoutMs}ms) exceeded — forcing exit with code 1`);
+      process.exit(1);
+    }, drainTimeoutMs);
+
+    try {
+      for (const client of this.clients.values()) {
+        client.ws.close(1001, 'Gateway shutting down');
+      }
+      this.clients.clear();
+
+      if (this.wss) {
+        await new Promise<void>((resolve) => {
+          this.wss!.close(() => resolve());
+        });
+        this.wss = null;
+      }
+
+      if (this.httpServer) {
+        await new Promise<void>((resolve) => {
+          this.httpServer!.close(() => resolve());
+        });
+        this.httpServer = null;
+      }
+
+      // Disconnect dynamic channels
+      for (const ch of this.dynamicChannels) {
+        await ch.disconnect();
+      }
+      this.dynamicChannels = [];
+
+      // Stop heartbeat
+      if (this.heartbeatManager) {
+        this.heartbeatManager.stop();
+      }
+
+      // Dispose retry queue timers
+      if (this.deps.retryQueue) {
+        this.deps.retryQueue.dispose();
+      }
+
+      this.running = false;
+
+      // Release gateway lock
+      await this.lock.release();
+
+      if (this.deps.hooks) {
+        await this.deps.hooks.emit('gateway_stop', {
+          event: 'gateway_stop',
+          data: {},
+          timestamp: Date.now(),
+        });
+      }
+
+      console.log('[gateway] Stopped');
+    } finally {
+      clearTimeout(drainTimer);
     }
-    this.clients.clear();
-
-    if (this.wss) {
-      await new Promise<void>((resolve) => {
-        this.wss!.close(() => resolve());
-      });
-      this.wss = null;
-    }
-
-    if (this.httpServer) {
-      await new Promise<void>((resolve) => {
-        this.httpServer!.close(() => resolve());
-      });
-      this.httpServer = null;
-    }
-
-    // Disconnect dynamic channels
-    for (const ch of this.dynamicChannels) {
-      await ch.disconnect();
-    }
-    this.dynamicChannels = [];
-
-    // Stop heartbeat
-    if (this.heartbeatManager) {
-      this.heartbeatManager.stop();
-    }
-
-    // Dispose retry queue timers
-    if (this.deps.retryQueue) {
-      this.deps.retryQueue.dispose();
-    }
-
-    this.running = false;
-
-    // Release gateway lock
-    await this.lock.release();
-
-    if (this.deps.hooks) {
-      await this.deps.hooks.emit('gateway_stop', {
-        event: 'gateway_stop',
-        data: {},
-        timestamp: Date.now(),
-      });
-    }
-
-    console.log('[gateway] Stopped');
   }
 
   isRunning(): boolean {
