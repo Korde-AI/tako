@@ -26,3 +26,4 @@ Thumbs.db
 # Local agent workspace/runtime state
 workspace/
 tako-full-prompt.txt
+TASK.md
