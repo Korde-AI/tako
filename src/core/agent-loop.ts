@@ -585,6 +585,7 @@ export class AgentLoop {
 
     // 6. Agent loop (may iterate if tool calls occur)
     let turns = 0;
+    let emergencyCompacted = false;
     while (turns < this.config.maxTurns) {
       turns++;
 
@@ -673,6 +674,26 @@ export class AgentLoop {
       } catch (err) {
         // Cancel streamer on error
         if (streamer) await streamer.cancel();
+
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const isContextOverflow = /prompt is too long|too many tokens|maximum.*tokens|context length/i.test(errMsg);
+
+        // Emergency compaction: if provider rejects due to context overflow,
+        // compact immediately and retry this turn once.
+        if (isContextOverflow && this.deps.compactor && !emergencyCompacted) {
+          emergencyCompacted = true;
+          console.warn(`[compaction] Emergency compaction triggered for session ${session.id}: ${errMsg.slice(0, 160)}`);
+          try {
+            await this.deps.compactor.compact(session, 12);
+            // Rebuild conversation with compacted session and retry.
+            messages.length = 0;
+            messages.push({ role: 'system', content: systemPrompt }, ...session.messages);
+            continue;
+          } catch (compactErr) {
+            console.error('[compaction] Emergency compaction failed:', compactErr instanceof Error ? compactErr.message : compactErr);
+          }
+        }
+
         // All model providers failed — enqueue for retry if available
         if (this.deps.retryQueue) {
           this.deps.retryQueue.enqueue({
