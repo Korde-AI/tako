@@ -769,8 +769,12 @@ async function runStart(): Promise<void> {
 
     const statusEmoji = event.status === 'completed' ? '👍' : event.status === 'timeout' ? '⏱' : '❌';
     const label = event.runId.slice(0, 8);
+    const cleanResult = (event.result ?? '').trim();
+    const safeResult = (cleanResult && cleanResult !== '[Calling tools]')
+      ? cleanResult
+      : 'Completed with no text output (check session history/tool results).';
     const summary = event.status === 'completed'
-      ? (((event.result ?? '').trim()) ? (event.result ?? '') : 'Completed with no text output (check session history/tool results).').slice(0, 1000)
+      ? safeResult.slice(0, 1000)
       : (event.error ?? 'Unknown error');
     const announcement = `${statusEmoji} Sub-agent \`${label}\` ${event.status}\n\n${summary}`;
 
@@ -784,7 +788,10 @@ async function runStart(): Promise<void> {
     const channelType = event.announceChannelType || parentSession.metadata.channelType as string | undefined;
     const channelTarget = event.announceChannelTarget || parentSession.metadata.channelTarget as string | undefined;
     if (channelType && channelTarget) {
-      const channel = channels.find((ch) => ch.id === channelType);
+      const parentAgentId = (parentSession.metadata.agentId as string | undefined) ?? 'main';
+      const channel = channels.find((ch) => ch.id === channelType && ((ch.agentId ?? 'main') === parentAgentId))
+        ?? channels.find((ch) => ch.id === channelType);
+
       const isLikelyDiscordSnowflake = /^\d{16,22}$/.test(channelTarget);
       if (channel && (channelType !== 'discord' || isLikelyDiscordSnowflake)) {
         try {

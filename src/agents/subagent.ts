@@ -292,14 +292,20 @@ export class SubAgentOrchestrator {
     for (let i = session.messages.length - 1; i >= 0; i--) {
       const m = session.messages[i] as any;
       if (!m || m.role !== 'assistant') continue;
-      if (typeof m.content === 'string' && m.content.trim()) return m.content;
+
+      if (typeof m.content === 'string') {
+        const text = m.content.trim();
+        // Ignore placeholder-only interim text.
+        if (text && text !== '[Calling tools]') return text;
+      }
+
       if (Array.isArray(m.content)) {
         const text = m.content
           .filter((p: any) => p?.type === 'text' && typeof p.text === 'string')
           .map((p: any) => p.text)
           .join('\n')
           .trim();
-        if (text) return text;
+        if (text && text !== '[Calling tools]') return text;
       }
     }
     return '';
@@ -515,8 +521,12 @@ export class SubAgentOrchestrator {
     if (!parentSession) return;
 
     const statusEmoji = run.status === 'completed' ? '✓' : run.status === 'timeout' ? '⏱' : '✗';
+    const cleanResult = (run.result ?? '').trim();
+    const safeResult = (cleanResult && cleanResult !== '[Calling tools]')
+      ? cleanResult
+      : 'Completed with no text output (check session history/tool results).';
     const summary = run.status === 'completed'
-      ? ((run.result && run.result.trim()) ? run.result : 'Completed with no text output (check session history/tool results).').slice(0, 500)
+      ? safeResult.slice(0, 500)
       : run.error ?? 'Unknown error';
 
     const announcement = `[sub-agent ${statusEmoji}] ${run.label} (${run.status}): ${summary}`;
