@@ -1017,20 +1017,7 @@ async function runStart(): Promise<void> {
       // Extract platform-specific target for typing/reactions
       const target = session.metadata.channelTarget as string;
 
-      // ─── First-time channel intro (only on genuine first contact, not restarts) ──
-      // Track introduced channels persistently so we never re-intro after restart.
-      if ((session as any).isNew && channel.id !== 'cli' && channel.id !== 'tui') {
-        const introKey = `${channel.agentId ?? 'main'}:${msg.channelId}`;
-        if (!introducedChannels.has(introKey)) {
-          introducedChannels.add(introKey);
-          saveIntroducedChannels();
-          const agentName = channel.agentId ?? 'Tako';
-          const intro = `👋 **${agentName}** is now active in this channel! Type \`/help\` for commands, or just chat directly here.`;
-          try {
-            await channel.send({ target, content: intro });
-          } catch { /* may fail if no send permission */ }
-        }
-      }
+      // Activation intro message intentionally disabled.
 
       // ─── Slash command handling (local, no LLM) ──────────────────
       if (inboundText.trim().startsWith('/')) {
@@ -2111,25 +2098,7 @@ async function runStart(): Promise<void> {
     await new Promise((r) => setTimeout(r, 2000));
   }
 
-  // Auto-activate bound agent channels once connected (Discord):
-  // sends the "agent is now active" intro without waiting for first mention.
-  for (const ch of channels) {
-    if (ch.id !== 'discord' || !ch.agentId) continue;
-    const agent = agentRegistry.get(ch.agentId);
-    const targets = agent?.bindings.discord?.channels ?? [];
-    for (const target of targets) {
-      const introKey = `${ch.agentId}:${`discord:${target}`}`;
-      if (introducedChannels.has(introKey)) continue;
-      introducedChannels.add(introKey);
-      saveIntroducedChannels();
-      const intro = `👋 **${ch.agentId}** is now active in this channel! Type \`/help\` for commands, or just chat directly here.`;
-      try {
-        await ch.send({ target, content: intro });
-      } catch {
-        // Ignore channels where bot lacks send permission
-      }
-    }
-  }
+  // Activation intro broadcast intentionally disabled.
 
   // Log startup — don't broadcast to channels (too noisy on restarts)
   console.log(`🐙 Tako online — model: ${config.providers.primary}`);
