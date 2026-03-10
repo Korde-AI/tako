@@ -1025,7 +1025,7 @@ async function runStart(): Promise<void> {
           introducedChannels.add(introKey);
           saveIntroducedChannels();
           const agentName = channel.agentId ?? 'Tako';
-          const intro = `👋 **${agentName}** is now active in this channel! Type \`/help\` for commands, or just @mention me to chat.`;
+          const intro = `👋 **${agentName}** is now active in this channel! Type \`/help\` for commands, or just chat directly here.`;
           try {
             await channel.send({ target, content: intro });
           } catch { /* may fail if no send permission */ }
@@ -1673,6 +1673,7 @@ async function runStart(): Promise<void> {
       const agentDiscord = new DiscordChannel({
         token: discord.token as string,
         guilds: discord.guilds as string[] | undefined,
+        allowUnmentionedChannels: agent.bindings.discord?.channels,
       });
       agentDiscord.agentId = agent.id;
 
@@ -2108,6 +2109,26 @@ async function runStart(): Promise<void> {
   const hasExternalChannels = channels.some((ch) => !blockingIds.has(ch.id));
   if (hasExternalChannels) {
     await new Promise((r) => setTimeout(r, 2000));
+  }
+
+  // Auto-activate bound agent channels once connected (Discord):
+  // sends the "agent is now active" intro without waiting for first mention.
+  for (const ch of channels) {
+    if (ch.id !== 'discord' || !ch.agentId) continue;
+    const agent = agentRegistry.get(ch.agentId);
+    const targets = agent?.bindings.discord?.channels ?? [];
+    for (const target of targets) {
+      const introKey = `${ch.agentId}:${`discord:${target}`}`;
+      if (introducedChannels.has(introKey)) continue;
+      introducedChannels.add(introKey);
+      saveIntroducedChannels();
+      const intro = `👋 **${ch.agentId}** is now active in this channel! Type \`/help\` for commands, or just chat directly here.`;
+      try {
+        await ch.send({ target, content: intro });
+      } catch {
+        // Ignore channels where bot lacks send permission
+      }
+    }
   }
 
   // Log startup — don't broadcast to channels (too noisy on restarts)

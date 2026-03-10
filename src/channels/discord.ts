@@ -64,6 +64,8 @@ export type ButtonHandler = (interaction: ButtonInteraction) => Promise<boolean>
 export interface DiscordChannelOpts {
   token: string;
   guilds?: string[];
+  /** Channel/guild IDs where this bot may respond without explicit @mention. */
+  allowUnmentionedChannels?: string[];
 }
 
 export class DiscordChannel implements Channel {
@@ -71,6 +73,7 @@ export class DiscordChannel implements Channel {
   agentId?: string;
   private token: string;
   private guilds?: Set<string>;
+  private allowUnmentionedChannels?: Set<string>;
   private client: Client | null = null;
   private handlers: MessageHandler[] = [];
   private slashCommandHandler: SlashCommandHandler | null = null;
@@ -87,6 +90,9 @@ export class DiscordChannel implements Channel {
   constructor(opts: DiscordChannelOpts) {
     this.token = opts.token;
     this.guilds = opts.guilds ? new Set(opts.guilds) : undefined;
+    this.allowUnmentionedChannels = opts.allowUnmentionedChannels
+      ? new Set(opts.allowUnmentionedChannels)
+      : undefined;
   }
 
   async connect(): Promise<void> {
@@ -107,13 +113,21 @@ export class DiscordChannel implements Channel {
       if (this.guilds && message.guild && !this.guilds.has(message.guild.id)) return;
 
       // ─── Mention-based routing ─────────────────────────────────────
-      // In guild channels, require an explicit textual @mention of THIS bot.
+      // In guild channels, default to explicit @mention unless this channel
+      // (or guild) is allowlisted for auto-active routing.
       // DMs always go through regardless.
       const myBotId = this.client?.user?.id;
       if (myBotId && message.guild) {
         const explicitMention = message.content.includes(`<@${myBotId}>`) || message.content.includes(`<@!${myBotId}>`);
         if (!explicitMention) {
-          return; // Not explicitly addressed to this bot
+          const channelId = message.channelId;
+          const guildId = message.guild.id;
+          const autoActive = this.allowUnmentionedChannels?.has(channelId)
+            || this.allowUnmentionedChannels?.has(guildId)
+            || false;
+          if (!autoActive) {
+            return; // Not explicitly addressed to this bot
+          }
         }
       }
 
