@@ -125,7 +125,7 @@ export async function runAcp(args: string[]): Promise<void> {
       }
 
       const acpx = detectAcpx(cwd);
-      const res = await run(acpx, [agent, 'exec', '--cwd', cwd, '--format', 'quiet', prompt], cwd, 180000);
+      const res = await run(acpx, [agent, 'exec', prompt], cwd, 180000);
       if (!res.ok) {
         console.error(res.stderr || res.stdout || 'acp exec failed');
         process.exit(1);
@@ -149,7 +149,7 @@ export async function runAcp(args: string[]): Promise<void> {
       const acpx = detectAcpx(cwd);
       const sessionName = `tako-${agent}-${Buffer.from(cwd).toString('base64url').slice(0, 10)}`;
       await run(acpx, [agent, 'sessions', 'new', '--name', sessionName], cwd, 60000);
-      const res = await run(acpx, [agent, '-s', sessionName, '--cwd', cwd, '--format', 'quiet', prompt], cwd, 240000);
+      const res = await run(acpx, [agent, '-s', sessionName, prompt], cwd, 240000);
       if (!res.ok) {
         console.error(res.stderr || res.stdout || 'acp send failed');
         process.exit(1);

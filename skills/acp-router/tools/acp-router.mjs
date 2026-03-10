@@ -194,11 +194,13 @@ const acpRouterTool = {
       }
       if (!prompt) return { success: false, error: 'Missing prompt. Usage: /acp exec <agent> <prompt>' };
 
-      const res = await run(acpx, [agent, 'exec', '--cwd', cwd, '--format', 'quiet', prompt], cwd);
+      const res = await run(acpx, [agent, 'exec', prompt], cwd);
       if (!res.ok) {
-        return { success: false, error: `acpx exec failed: ${res.stderr || res.stdout || 'unknown error'}` };
+        return { success: false, error: `acpx exec failed: ${(res.stderr || res.stdout || 'unknown error').trim()}` };
       }
-      return { success: true, output: res.stdout || '(no output)' };
+      const text = (res.stdout || '').trim();
+      const fallback = (res.stderr || '').trim();
+      return { success: true, output: text || fallback || '(acpx returned no text output)' };
     }
 
     // Default mode: /acp <agent> <prompt>
@@ -219,17 +221,19 @@ const acpRouterTool = {
     // Ensure session exists (best-effort create)
     await run(acpx, [agent, 'sessions', 'new', '--name', sessionName], cwd, 120000);
 
-    const sendRes = await run(acpx, [agent, '-s', sessionName, '--cwd', cwd, '--format', 'quiet', prompt], cwd);
+    const sendRes = await run(acpx, [agent, '-s', sessionName, prompt], cwd);
     if (!sendRes.ok) {
-      return { success: false, error: `acpx session send failed: ${sendRes.stderr || sendRes.stdout || 'unknown error'}` };
+      return { success: false, error: `acpx session send failed: ${(sendRes.stderr || sendRes.stdout || 'unknown error').trim()}` };
     }
 
     store[key] = { agent, sessionName, updatedAt: Date.now() };
     await saveStore(store);
 
+    const text = (sendRes.stdout || '').trim();
+    const fallback = (sendRes.stderr || '').trim();
     return {
       success: true,
-      output: sendRes.stdout || '(no output)',
+      output: text || fallback || `(acpx returned no text output for ${agent}:${sessionName})`,
       data: { agent, sessionName },
     };
   },
