@@ -150,14 +150,12 @@ const acpRouterTool = {
 
     const versionCheck = await run(acpx, ['--version'], cwd, 15000);
     if (!versionCheck.ok) {
-      return {
-        success: false,
-        error: [
-          `acpx is not available (${acpx}).`,
-          'Install it with: npm i -g acpx',
-          'Or set ACPX_CMD to a valid binary path.',
-        ].join(' '),
-      };
+      const msg = [
+        `acpx is not available (${acpx}).`,
+        'Install it with: npm i -g acpx',
+        'Or set ACPX_CMD to a valid binary path.',
+      ].join(' ');
+      return { success: false, error: msg, output: `ACP error: ${msg}` };
     }
 
     const first = (tokens[0] || '').toLowerCase();
@@ -172,7 +170,8 @@ const acpRouterTool = {
     if (first === 'reset') {
       const agent = (tokens[1] || '').toLowerCase();
       if (!AGENT_ALIASES.has(agent)) {
-        return { success: false, error: `Invalid agent "${agent}". Use: pi|claude|codex|opencode|gemini|kimi` };
+        const msg = `Invalid agent "${agent}". Use: pi|claude|codex|opencode|gemini|kimi`;
+        return { success: false, error: msg, output: `ACP error: ${msg}` };
       }
       const key = sessionKey(ctx, agent);
       const bound = store[key];
@@ -190,13 +189,18 @@ const acpRouterTool = {
       const agent = (tokens[1] || '').toLowerCase();
       const prompt = tokens.slice(2).join(' ').trim();
       if (!AGENT_ALIASES.has(agent)) {
-        return { success: false, error: `Invalid agent "${agent}". Use: pi|claude|codex|opencode|gemini|kimi` };
+        const msg = `Invalid agent "${agent}". Use: pi|claude|codex|opencode|gemini|kimi`;
+        return { success: false, error: msg, output: `ACP error: ${msg}` };
       }
-      if (!prompt) return { success: false, error: 'Missing prompt. Usage: /acp exec <agent> <prompt>' };
+      if (!prompt) {
+        const msg = 'Missing prompt. Usage: /acp exec <agent> <prompt>';
+        return { success: false, error: msg, output: `ACP error: ${msg}` };
+      }
 
       const res = await run(acpx, [agent, 'exec', prompt], cwd);
       if (!res.ok) {
-        return { success: false, error: `acpx exec failed: ${(res.stderr || res.stdout || 'unknown error').trim()}` };
+        const msg = `acpx exec failed: ${(res.stderr || res.stdout || 'unknown error').trim()}`;
+        return { success: false, error: msg, output: `ACP error: ${msg}` };
       }
       const text = (res.stdout || '').trim();
       const fallback = (res.stderr || '').trim();
@@ -208,10 +212,12 @@ const acpRouterTool = {
     const prompt = tokens.slice(1).join(' ').trim();
 
     if (!AGENT_ALIASES.has(agent)) {
-      return { success: false, error: `Invalid subcommand/agent "${agent}". Try /acp help` };
+      const msg = `Invalid subcommand/agent "${agent}". Try /acp help`;
+      return { success: false, error: msg, output: `ACP error: ${msg}` };
     }
     if (!prompt) {
-      return { success: false, error: 'Missing prompt. Usage: /acp <agent> <prompt>' };
+      const msg = 'Missing prompt. Usage: /acp <agent> <prompt>';
+      return { success: false, error: msg, output: `ACP error: ${msg}` };
     }
 
     const key = sessionKey(ctx, agent);
@@ -223,7 +229,8 @@ const acpRouterTool = {
 
     const sendRes = await run(acpx, [agent, '-s', sessionName, prompt], cwd);
     if (!sendRes.ok) {
-      return { success: false, error: `acpx session send failed: ${(sendRes.stderr || sendRes.stdout || 'unknown error').trim()}` };
+      const msg = `acpx session send failed: ${(sendRes.stderr || sendRes.stdout || 'unknown error').trim()}`;
+      return { success: false, error: msg, output: `ACP error: ${msg}` };
     }
 
     store[key] = { agent, sessionName, updatedAt: Date.now() };

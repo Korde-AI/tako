@@ -228,7 +228,9 @@ export function createAgentTools(deps: AgentToolsDeps): Tool[] {
                 threadId: created.id,
                 parentChannelId: ctx.channelTarget,
                 agentId: resolvedAgentId,
-                sessionKey: `agent:${resolvedAgentId}:discord:${created.id}`,
+                // Bind thread directly to spawned sub-agent session so
+                // follow-up messages inherit full run history/context.
+                sessionKey: run.sessionKey,
               });
               await threadBindings.save();
             }
