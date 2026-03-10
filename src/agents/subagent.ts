@@ -218,7 +218,9 @@ export class SubAgentOrchestrator {
     _agent?: AgentDescriptor,
   ): Promise<SubAgentRun> {
     const runId = crypto.randomUUID();
-    const agentId = opts.agentId ?? 'main';
+    const parentSession = this.sessions.get(parentSessionId);
+    const inheritedAgentId = parentSession?.metadata?.agentId as string | undefined;
+    const agentId = opts.agentId ?? inheritedAgentId ?? 'main';
 
     // Build session key: agent:<id>:<mode>:<uuid>
     const sessionKey = `agent:${agentId}:${opts.mode}:${runId}`;

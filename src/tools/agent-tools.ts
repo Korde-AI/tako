@@ -202,7 +202,7 @@ export function createAgentTools(deps: AgentToolsDeps): Tool[] {
 
         if (thread && ctx.channelType === 'discord' && ctx.channelTarget && ctx.channel) {
           const discordChannel = ctx.channel as DiscordChannel;
-          const resolvedAgentId = agentId ?? 'main';
+          const resolvedAgentId = agentId ?? ctx.agentId ?? 'main';
           const name = threadName ?? `🐙 ${resolvedAgentId}`;
 
           try {
