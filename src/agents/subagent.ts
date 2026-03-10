@@ -288,6 +288,23 @@ export class SubAgentOrchestrator {
     return run;
   }
 
+  private extractLatestAssistantText(session: Session): string {
+    for (let i = session.messages.length - 1; i >= 0; i--) {
+      const m = session.messages[i] as any;
+      if (!m || m.role !== 'assistant') continue;
+      if (typeof m.content === 'string' && m.content.trim()) return m.content;
+      if (Array.isArray(m.content)) {
+        const text = m.content
+          .filter((p: any) => p?.type === 'text' && typeof p.text === 'string')
+          .map((p: any) => p.text)
+          .join('\n')
+          .trim();
+        if (text) return text;
+      }
+    }
+    return '';
+  }
+
   /** Execute a sub-agent run. */
   private async executeRun(run: SubAgentRun, session: Session): Promise<void> {
     let result = '';
@@ -302,7 +319,8 @@ export class SubAgentOrchestrator {
       // Don't overwrite if already killed/timed out
       if (run.status !== 'running') return;
 
-      run.result = result;
+      const fallback = this.extractLatestAssistantText(session);
+      run.result = (result || fallback || '').trim();
       run.status = 'completed';
       run.completedAt = new Date();
     } catch (err) {
@@ -342,8 +360,8 @@ export class SubAgentOrchestrator {
     }
 
     run.status = 'completed';
-    run.result = result;
-    return result;
+    run.result = (result || this.extractLatestAssistantText(session) || '').trim();
+    return run.result;
   }
 
   /** List all sub-agent runs, optionally filtered by parent session. */
@@ -498,7 +516,7 @@ export class SubAgentOrchestrator {
 
     const statusEmoji = run.status === 'completed' ? '✓' : run.status === 'timeout' ? '⏱' : '✗';
     const summary = run.status === 'completed'
-      ? (run.result ?? '').slice(0, 500)
+      ? ((run.result && run.result.trim()) ? run.result : 'Completed with no text output (check session history/tool results).').slice(0, 500)
       : run.error ?? 'Unknown error';
 
     const announcement = `[sub-agent ${statusEmoji}] ${run.label} (${run.status}): ${summary}`;

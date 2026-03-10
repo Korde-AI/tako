@@ -770,7 +770,7 @@ async function runStart(): Promise<void> {
     const statusEmoji = event.status === 'completed' ? '👍' : event.status === 'timeout' ? '⏱' : '❌';
     const label = event.runId.slice(0, 8);
     const summary = event.status === 'completed'
-      ? (event.result ?? '').slice(0, 1000)
+      ? (((event.result ?? '').trim()) ? (event.result ?? '') : 'Completed with no text output (check session history/tool results).').slice(0, 1000)
       : (event.error ?? 'Unknown error');
     const announcement = `${statusEmoji} Sub-agent \`${label}\` ${event.status}\n\n${summary}`;
 
