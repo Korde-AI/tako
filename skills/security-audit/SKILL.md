@@ -35,7 +35,7 @@ Present findings as a summary table:
 Environment Summary
 ═══════════════════
 OS:           Ubuntu 24.04 LTS
-User:         shuyhere (non-root)
+User:         local-user (non-root)
 Access:       SSH (key-based)
 Public IP:    203.0.113.42
 Tako bind:    127.0.0.1:18790 (localhost only) ✅
