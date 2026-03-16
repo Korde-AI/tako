@@ -26,13 +26,13 @@ describe('principal registry', () => {
       displayName: 'shu',
       platform: 'discord',
       platformUserId: '123',
-      username: 'shuyhere',
+      username: 'alice',
     });
     const second = await registry.getOrCreateHuman({
       displayName: 'shu updated',
       platform: 'discord',
       platformUserId: '123',
-      username: 'shuyhere',
+      username: 'alice',
     });
 
     assert.equal(first.principalId, second.principalId);

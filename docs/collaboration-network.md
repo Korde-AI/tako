@@ -163,8 +163,8 @@ Delivered:
 - isolated edge and hub homes
 
 Key files:
-- [src/core/paths.ts](/home/shuyhere/projects/tako/src/core/paths.ts)
-- [src/core/runtime-mode.ts](/home/shuyhere/projects/tako/src/core/runtime-mode.ts)
+- [src/core/paths.ts](../src/core/paths.ts)
+- [src/core/runtime-mode.ts](../src/core/runtime-mode.ts)
 
 Outcome:
 - one machine can safely host multiple Tako nodes
@@ -180,10 +180,10 @@ Delivered:
 - home-aware daemon/status behavior
 
 Key files:
-- [src/core/node-identity.ts](/home/shuyhere/projects/tako/src/core/node-identity.ts)
-- [src/hub/server.ts](/home/shuyhere/projects/tako/src/hub/server.ts)
-- [src/hub/routes.ts](/home/shuyhere/projects/tako/src/hub/routes.ts)
-- [src/cli/hub.ts](/home/shuyhere/projects/tako/src/cli/hub.ts)
+- [src/core/node-identity.ts](../src/core/node-identity.ts)
+- [src/hub/server.ts](../src/hub/server.ts)
+- [src/hub/routes.ts](../src/hub/routes.ts)
+- [src/cli/hub.ts](../src/cli/hub.ts)
 
 Outcome:
 - `edge` and `hub` are now explicit runtime types
@@ -202,12 +202,12 @@ Delivered:
 - principal-aware message queue batching
 
 Key files:
-- [src/principals/types.ts](/home/shuyhere/projects/tako/src/principals/types.ts)
-- [src/principals/registry.ts](/home/shuyhere/projects/tako/src/principals/registry.ts)
-- [src/cli/principals.ts](/home/shuyhere/projects/tako/src/cli/principals.ts)
-- [src/auth/allow-from.ts](/home/shuyhere/projects/tako/src/auth/allow-from.ts)
-- [src/core/audit.ts](/home/shuyhere/projects/tako/src/core/audit.ts)
-- [src/core/message-queue.ts](/home/shuyhere/projects/tako/src/core/message-queue.ts)
+- [src/principals/types.ts](../src/principals/types.ts)
+- [src/principals/registry.ts](../src/principals/registry.ts)
+- [src/cli/principals.ts](../src/cli/principals.ts)
+- [src/auth/allow-from.ts](../src/auth/allow-from.ts)
+- [src/core/audit.ts](../src/core/audit.ts)
+- [src/core/message-queue.ts](../src/core/message-queue.ts)
 
 Runtime consequences:
 - inbound users resolve to stable `principalId`
@@ -340,16 +340,16 @@ Delivered:
 - project-aware audit fields
 
 Key files:
-- [src/projects/types.ts](/home/shuyhere/projects/tako/src/projects/types.ts)
-- [src/projects/registry.ts](/home/shuyhere/projects/tako/src/projects/registry.ts)
-- [src/projects/memberships.ts](/home/shuyhere/projects/tako/src/projects/memberships.ts)
-- [src/projects/bindings.ts](/home/shuyhere/projects/tako/src/projects/bindings.ts)
-- [src/projects/access.ts](/home/shuyhere/projects/tako/src/projects/access.ts)
-- [src/projects/bootstrap.ts](/home/shuyhere/projects/tako/src/projects/bootstrap.ts)
-- [src/cli/projects.ts](/home/shuyhere/projects/tako/src/cli/projects.ts)
-- [src/index.ts](/home/shuyhere/projects/tako/src/index.ts)
-- [src/commands/registry.ts](/home/shuyhere/projects/tako/src/commands/registry.ts)
-- [src/core/audit.ts](/home/shuyhere/projects/tako/src/core/audit.ts)
+- [src/projects/types.ts](../src/projects/types.ts)
+- [src/projects/registry.ts](../src/projects/registry.ts)
+- [src/projects/memberships.ts](../src/projects/memberships.ts)
+- [src/projects/bindings.ts](../src/projects/bindings.ts)
+- [src/projects/access.ts](../src/projects/access.ts)
+- [src/projects/bootstrap.ts](../src/projects/bootstrap.ts)
+- [src/cli/projects.ts](../src/cli/projects.ts)
+- [src/index.ts](../src/index.ts)
+- [src/commands/registry.ts](../src/commands/registry.ts)
+- [src/core/audit.ts](../src/core/audit.ts)
 
 Runtime consequences:
 - a collaborative channel or thread can resolve to a stable `projectId`
@@ -392,13 +392,13 @@ Delivered:
 - session-local runtime context attachment with persistence-safe stripping
 
 Key files:
-- [src/core/execution-context.ts](/home/shuyhere/projects/tako/src/core/execution-context.ts)
-- [src/index.ts](/home/shuyhere/projects/tako/src/index.ts)
-- [src/core/agent-loop.ts](/home/shuyhere/projects/tako/src/core/agent-loop.ts)
-- [src/gateway/session.ts](/home/shuyhere/projects/tako/src/gateway/session.ts)
-- [src/commands/registry.ts](/home/shuyhere/projects/tako/src/commands/registry.ts)
-- [src/tools/tool.ts](/home/shuyhere/projects/tako/src/tools/tool.ts)
-- [src/core/prompt.ts](/home/shuyhere/projects/tako/src/core/prompt.ts)
+- [src/core/execution-context.ts](../src/core/execution-context.ts)
+- [src/index.ts](../src/index.ts)
+- [src/core/agent-loop.ts](../src/core/agent-loop.ts)
+- [src/gateway/session.ts](../src/gateway/session.ts)
+- [src/commands/registry.ts](../src/commands/registry.ts)
+- [src/tools/tool.ts](../src/tools/tool.ts)
+- [src/core/prompt.ts](../src/core/prompt.ts)
 
 Runtime consequences:
 - ingress now builds identity and project context once per interaction
@@ -436,13 +436,13 @@ Delivered:
 - command and audit surfaces that can inspect shared-session state
 
 Key files:
-- [src/sessions/shared.ts](/home/shuyhere/projects/tako/src/sessions/shared.ts)
-- [src/cli/shared-sessions.ts](/home/shuyhere/projects/tako/src/cli/shared-sessions.ts)
-- [src/index.ts](/home/shuyhere/projects/tako/src/index.ts)
-- [src/core/execution-context.ts](/home/shuyhere/projects/tako/src/core/execution-context.ts)
-- [src/commands/registry.ts](/home/shuyhere/projects/tako/src/commands/registry.ts)
-- [src/core/audit.ts](/home/shuyhere/projects/tako/src/core/audit.ts)
-- [src/core/paths.ts](/home/shuyhere/projects/tako/src/core/paths.ts)
+- [src/sessions/shared.ts](../src/sessions/shared.ts)
+- [src/cli/shared-sessions.ts](../src/cli/shared-sessions.ts)
+- [src/index.ts](../src/index.ts)
+- [src/core/execution-context.ts](../src/core/execution-context.ts)
+- [src/commands/registry.ts](../src/commands/registry.ts)
+- [src/core/audit.ts](../src/core/audit.ts)
+- [src/core/paths.ts](../src/core/paths.ts)
 
 Runtime consequences:
 - a project-bound local session now has a stable shared-session record
@@ -475,11 +475,11 @@ Phase 7 can now build on:
 Phase 7 introduced scoped project memory on the local edge.
 
 Delivered:
-- scoped memory resolution in [src/memory/scopes.ts](/home/shuyhere/projects/tako/src/memory/scopes.ts)
-- scope-aware memory tools in [src/tools/memory.ts](/home/shuyhere/projects/tako/src/tools/memory.ts)
-- prompt loading that only sees visible scopes in [src/core/prompt.ts](/home/shuyhere/projects/tako/src/core/prompt.ts)
-- project bootstrap memory layout updates in [src/projects/bootstrap.ts](/home/shuyhere/projects/tako/src/projects/bootstrap.ts)
-- memory inspection support in [src/cli/memory.ts](/home/shuyhere/projects/tako/src/cli/memory.ts)
+- scoped memory resolution in [src/memory/scopes.ts](../src/memory/scopes.ts)
+- scope-aware memory tools in [src/tools/memory.ts](../src/tools/memory.ts)
+- prompt loading that only sees visible scopes in [src/core/prompt.ts](../src/core/prompt.ts)
+- project bootstrap memory layout updates in [src/projects/bootstrap.ts](../src/projects/bootstrap.ts)
+- memory inspection support in [src/cli/memory.ts](../src/cli/memory.ts)
 
 Memory layout:
 ```text
@@ -517,18 +517,18 @@ Important boundary:
 Phase 8 introduced project-scoped tool enforcement on the local edge.
 
 Delivered:
-- project root resolution in [src/projects/root.ts](/home/shuyhere/projects/tako/src/projects/root.ts)
-- per-project workspace bootstrapping in [src/projects/bootstrap.ts](/home/shuyhere/projects/tako/src/projects/bootstrap.ts)
-- project root CLI management in [src/cli/projects.ts](/home/shuyhere/projects/tako/src/cli/projects.ts)
+- project root resolution in [src/projects/root.ts](../src/projects/root.ts)
+- per-project workspace bootstrapping in [src/projects/bootstrap.ts](../src/projects/bootstrap.ts)
+- project root CLI management in [src/cli/projects.ts](../src/cli/projects.ts)
 - execution context fields for:
   - `workspaceRoot`
   - `projectRoot`
   - `allowedToolRoot`
 - allowed-root enforcement in:
-  - [src/tools/fs.ts](/home/shuyhere/projects/tako/src/tools/fs.ts)
-  - [src/tools/search.ts](/home/shuyhere/projects/tako/src/tools/search.ts)
-  - [src/tools/git.ts](/home/shuyhere/projects/tako/src/tools/git.ts)
-  - [src/tools/exec.ts](/home/shuyhere/projects/tako/src/tools/exec.ts)
+  - [src/tools/fs.ts](../src/tools/fs.ts)
+  - [src/tools/search.ts](../src/tools/search.ts)
+  - [src/tools/git.ts](../src/tools/git.ts)
+  - [src/tools/exec.ts](../src/tools/exec.ts)
 - denial logging through failed `tool_call` plus `permission_denied` audit records
 
 Runtime behavior:
@@ -563,7 +563,7 @@ Delivered:
   - project registration
   - membership summary updates
 - local hub CLI inspection commands
-- a minimal [edge-client.ts](/home/shuyhere/projects/tako/src/network/edge-client.ts) seam for later edge-hub protocol work
+- a minimal [edge-client.ts](../src/network/edge-client.ts) seam for later edge-hub protocol work
 
 Important boundary:
 - the hub is still infra-only
@@ -586,8 +586,8 @@ Delivered:
 - periodic heartbeat from edge to hub
 - project summary sync from edge to hub
 - membership summary sync from edge to hub
-- route lookup support in [edge-client.ts](/home/shuyhere/projects/tako/src/network/edge-client.ts)
-- reusable sync helpers in [sync.ts](/home/shuyhere/projects/tako/src/network/sync.ts)
+- route lookup support in [edge-client.ts](../src/network/edge-client.ts)
+- reusable sync helpers in [sync.ts](../src/network/sync.ts)
 - project CLI mutations now update the hub summary state
 - normalized hub URL handling in config resolution
 
@@ -608,11 +608,11 @@ Current limits after Phase 10:
 Phase 11 added local-first pairing and invitation state on the edge.
 
 Delivered:
-- persistent trust records in [trust.ts](/home/shuyhere/projects/tako/src/network/trust.ts)
-- persistent invite records in [invites.ts](/home/shuyhere/projects/tako/src/network/invites.ts)
-- authority ceiling checks in [authority.ts](/home/shuyhere/projects/tako/src/network/authority.ts)
-- network CLI in [network.ts](/home/shuyhere/projects/tako/src/cli/network.ts)
-- centralized network path roots in [paths.ts](/home/shuyhere/projects/tako/src/core/paths.ts)
+- persistent trust records in [trust.ts](../src/network/trust.ts)
+- persistent invite records in [invites.ts](../src/network/invites.ts)
+- authority ceiling checks in [authority.ts](../src/network/authority.ts)
+- network CLI in [network.ts](../src/cli/network.ts)
+- centralized network path roots in [paths.ts](../src/core/paths.ts)
 - invite import flow so one edge can accept an invite created on another home
 
 What works now:
@@ -639,13 +639,13 @@ Current limits after Phase 11:
 Phase 12 added the first real network shared-session path.
 
 Delivered:
-- edge-side network session persistence in [shared-sessions.ts](/home/shuyhere/projects/tako/src/network/shared-sessions.ts)
-- session sync helpers in [session-sync.ts](/home/shuyhere/projects/tako/src/network/session-sync.ts)
-- hub relay persistence in [relay.ts](/home/shuyhere/projects/tako/src/hub/relay.ts)
-- hub relay endpoints in [routes.ts](/home/shuyhere/projects/tako/src/hub/routes.ts)
-- edge client relay methods in [edge-client.ts](/home/shuyhere/projects/tako/src/network/edge-client.ts)
-- edge runtime polling and outbound relay wiring in [index.ts](/home/shuyhere/projects/tako/src/index.ts)
-- network session CLI commands through [network.ts](/home/shuyhere/projects/tako/src/cli/network.ts)
+- edge-side network session persistence in [shared-sessions.ts](../src/network/shared-sessions.ts)
+- session sync helpers in [session-sync.ts](../src/network/session-sync.ts)
+- hub relay persistence in [relay.ts](../src/hub/relay.ts)
+- hub relay endpoints in [routes.ts](../src/hub/routes.ts)
+- edge client relay methods in [edge-client.ts](../src/network/edge-client.ts)
+- edge runtime polling and outbound relay wiring in [index.ts](../src/index.ts)
+- network session CLI commands through [network.ts](../src/cli/network.ts)
 
 What works now:
 - an edge can register a network session for a project
@@ -671,12 +671,12 @@ Current limits after Phase 12:
 Phase 13 added bounded remote delegation on top of the Phase 12 relay path.
 
 Delivered:
-- explicit delegation capability registry in [capabilities.ts](/home/shuyhere/projects/tako/src/network/capabilities.ts)
-- delegation request and result persistence in [delegation.ts](/home/shuyhere/projects/tako/src/network/delegation.ts)
-- local receiving-edge policy evaluation in [delegation-policy.ts](/home/shuyhere/projects/tako/src/network/delegation-policy.ts)
-- bounded local execution handlers in [delegation-executor.ts](/home/shuyhere/projects/tako/src/network/delegation-executor.ts)
-- runtime handling for inbound delegation requests and returned results in [index.ts](/home/shuyhere/projects/tako/src/index.ts)
-- network CLI controls in [network.ts](/home/shuyhere/projects/tako/src/cli/network.ts)
+- explicit delegation capability registry in [capabilities.ts](../src/network/capabilities.ts)
+- delegation request and result persistence in [delegation.ts](../src/network/delegation.ts)
+- local receiving-edge policy evaluation in [delegation-policy.ts](../src/network/delegation-policy.ts)
+- bounded local execution handlers in [delegation-executor.ts](../src/network/delegation-executor.ts)
+- runtime handling for inbound delegation requests and returned results in [index.ts](../src/index.ts)
+- network CLI controls in [network.ts](../src/cli/network.ts)
 
 What works now:
 - one trusted edge can send a delegation request to another edge through the existing network session relay
@@ -703,23 +703,23 @@ Phase 14 hardened the operator surface around the collaboration model.
 
 Delivered:
 - JSON-capable and more informative CLI status surfaces in:
-  - [network.ts](/home/shuyhere/projects/tako/src/cli/network.ts)
-  - [hub.ts](/home/shuyhere/projects/tako/src/cli/hub.ts)
-  - [projects.ts](/home/shuyhere/projects/tako/src/cli/projects.ts)
-  - [commands.ts](/home/shuyhere/projects/tako/src/daemon/commands.ts)
+  - [network.ts](../src/cli/network.ts)
+  - [hub.ts](../src/cli/hub.ts)
+  - [projects.ts](../src/cli/projects.ts)
+  - [commands.ts](../src/daemon/commands.ts)
 - richer edge status with project, shared-session, network-session, trust, and invite counts
 - richer hub status with relay session and queued relay event counts
 - doctor checks for invalid `network.hub` values and unusable project roots in:
-  - [config.ts](/home/shuyhere/projects/tako/src/doctor/checks/config.ts)
-  - [permissions.ts](/home/shuyhere/projects/tako/src/doctor/checks/permissions.ts)
+  - [config.ts](../src/doctor/checks/config.ts)
+  - [permissions.ts](../src/doctor/checks/permissions.ts)
 - updated product-facing docs in:
-  - [README.md](/home/shuyhere/projects/tako/README.md)
-  - [getting-started-solo.md](/home/shuyhere/projects/tako/docs/getting-started-solo.md)
-  - [getting-started-local-collab.md](/home/shuyhere/projects/tako/docs/getting-started-local-collab.md)
-  - [getting-started-network-collab.md](/home/shuyhere/projects/tako/docs/getting-started-network-collab.md)
-  - [troubleshooting.md](/home/shuyhere/projects/tako/docs/troubleshooting.md)
-  - [release-boundary.md](/home/shuyhere/projects/tako/docs/release-boundary.md)
-  - [qa-phase14.md](/home/shuyhere/projects/tako/docs/qa-phase14.md)
+  - [README.md](../README.md)
+  - [getting-started-solo.md](../docs/getting-started-solo.md)
+  - [getting-started-local-collab.md](../docs/getting-started-local-collab.md)
+  - [getting-started-network-collab.md](../docs/getting-started-network-collab.md)
+  - [troubleshooting.md](../docs/troubleshooting.md)
+  - [release-boundary.md](../docs/release-boundary.md)
+  - [qa-phase14.md](../docs/qa-phase14.md)
 
 What this changes operationally:
 - one technically competent user can now stand up a hub and multiple edges on one server without reading source code
@@ -736,11 +736,11 @@ Important boundary:
 Phase 15 adds the filesystem model needed for “shared project plus private agent worktree”.
 
 Delivered:
-- shared project artifact records in [artifacts.ts](/home/shuyhere/projects/tako/src/projects/artifacts.ts)
-- per-edge worktree records in [worktrees.ts](/home/shuyhere/projects/tako/src/projects/worktrees.ts)
-- project path helpers for shared artifact roots and per-node worktree roots in [root.ts](/home/shuyhere/projects/tako/src/projects/root.ts)
-- project bootstrap now creates artifact and worktree layout in [bootstrap.ts](/home/shuyhere/projects/tako/src/projects/bootstrap.ts)
-- project CLI support in [projects.ts](/home/shuyhere/projects/tako/src/cli/projects.ts) for:
+- shared project artifact records in [artifacts.ts](../src/projects/artifacts.ts)
+- per-edge worktree records in [worktrees.ts](../src/projects/worktrees.ts)
+- project path helpers for shared artifact roots and per-node worktree roots in [root.ts](../src/projects/root.ts)
+- project bootstrap now creates artifact and worktree layout in [bootstrap.ts](../src/projects/bootstrap.ts)
+- project CLI support in [projects.ts](../src/cli/projects.ts) for:
   - publishing shared artifacts
   - listing and inspecting artifacts
   - registering per-node worktrees
@@ -765,10 +765,10 @@ Important boundary:
 Phase 16 turns the shared-project filesystem model into an actual collaboration path across trusted edges.
 
 Delivered:
-- artifact envelope export/import in [distribution.ts](/home/shuyhere/projects/tako/src/projects/distribution.ts)
-- patch creation and application helpers in [patches.ts](/home/shuyhere/projects/tako/src/projects/patches.ts)
-- artifact relay support over network sessions in [shared-sessions.ts](/home/shuyhere/projects/tako/src/network/shared-sessions.ts)
-- project CLI support in [projects.ts](/home/shuyhere/projects/tako/src/cli/projects.ts) for:
+- artifact envelope export/import in [distribution.ts](../src/projects/distribution.ts)
+- patch creation and application helpers in [patches.ts](../src/projects/patches.ts)
+- artifact relay support over network sessions in [shared-sessions.ts](../src/network/shared-sessions.ts)
+- project CLI support in [projects.ts](../src/cli/projects.ts) for:
   - syncing existing shared artifacts to trusted participant edges
   - creating patch artifacts from registered worktrees
   - applying patch artifacts into registered worktrees
@@ -793,25 +793,25 @@ Important boundary:
 Phase 17 adds participant-aware project background refresh, automatic artifact-sync policy, patch approval workflow, and branch coordination on top of the shared-project model.
 
 Delivered:
-- collaboration policy fields on [types.ts](/home/shuyhere/projects/tako/src/projects/types.ts) for:
+- collaboration policy fields on [types.ts](../src/projects/types.ts) for:
   - `autoArtifactSync`
   - `patchRequiresApproval`
   - `announceJoins`
-- persistent project background snapshots in [background.ts](/home/shuyhere/projects/tako/src/projects/background.ts)
-- persistent patch approval records in [approvals.ts](/home/shuyhere/projects/tako/src/projects/approvals.ts)
-- persistent per-node branch records in [branches.ts](/home/shuyhere/projects/tako/src/projects/branches.ts)
-- expanded project CLI support in [projects.ts](/home/shuyhere/projects/tako/src/cli/projects.ts) for:
+- persistent project background snapshots in [background.ts](../src/projects/background.ts)
+- persistent patch approval records in [approvals.ts](../src/projects/approvals.ts)
+- persistent per-node branch records in [branches.ts](../src/projects/branches.ts)
+- expanded project CLI support in [projects.ts](../src/cli/projects.ts) for:
   - project collaboration policy inspection and updates
   - patch approval and denial
   - branch registration and listing
   - background inspection
-- network-session collaboration policy in [shared-sessions.ts](/home/shuyhere/projects/tako/src/network/shared-sessions.ts) and [session-sync.ts](/home/shuyhere/projects/tako/src/network/session-sync.ts)
-- Discord-facing project commands in [registry.ts](/home/shuyhere/projects/tako/src/commands/registry.ts):
+- network-session collaboration policy in [shared-sessions.ts](../src/network/shared-sessions.ts) and [session-sync.ts](../src/network/session-sync.ts)
+- Discord-facing project commands in [registry.ts](../src/commands/registry.ts):
   - `/projectbg`
   - `/patches`
   - `/patchapprove`
   - `/patchdeny`
-- runtime join/background wiring in [index.ts](/home/shuyhere/projects/tako/src/index.ts) and prompt injection in [agent-loop.ts](/home/shuyhere/projects/tako/src/core/agent-loop.ts)
+- runtime join/background wiring in [index.ts](../src/index.ts) and prompt injection in [agent-loop.ts](../src/core/agent-loop.ts)
 
 What this changes:
 - when a new local participant joins a shared project session, the edge rebuilds a project-visible background snapshot
@@ -835,14 +835,14 @@ Important boundary:
 Phase 18 closes the loop for multi-edge collaboration by making remote joins explicit, adding Discord button approvals, and persisting conflict state for concurrent branch or patch changes.
 
 Delivered:
-- explicit network-side join event usage in [session-sync.ts](/home/shuyhere/projects/tako/src/network/session-sync.ts), [shared-sessions.ts](/home/shuyhere/projects/tako/src/network/shared-sessions.ts), [network.ts](/home/shuyhere/projects/tako/src/cli/network.ts), and [index.ts](/home/shuyhere/projects/tako/src/index.ts)
-- Discord button-based patch review prompts in [discord.ts](/home/shuyhere/projects/tako/src/channels/discord.ts)
-- runtime button handling for patch approval and denial in [index.ts](/home/shuyhere/projects/tako/src/index.ts)
+- explicit network-side join event usage in [session-sync.ts](../src/network/session-sync.ts), [shared-sessions.ts](../src/network/shared-sessions.ts), [network.ts](../src/cli/network.ts), and [index.ts](../src/index.ts)
+- Discord button-based patch review prompts in [discord.ts](../src/channels/discord.ts)
+- runtime button handling for patch approval and denial in [index.ts](../src/index.ts)
 - conflict-aware patch approval and branch state in:
-  - [types.ts](/home/shuyhere/projects/tako/src/projects/types.ts)
-  - [approvals.ts](/home/shuyhere/projects/tako/src/projects/approvals.ts)
-  - [branches.ts](/home/shuyhere/projects/tako/src/projects/branches.ts)
-  - [projects.ts](/home/shuyhere/projects/tako/src/cli/projects.ts)
+  - [types.ts](../src/projects/types.ts)
+  - [approvals.ts](../src/projects/approvals.ts)
+  - [branches.ts](../src/projects/branches.ts)
+  - [projects.ts](../src/cli/projects.ts)
 
 What this changes:
 - remote node joins and remote principal joins now travel as explicit network events instead of being inferred only from later messages

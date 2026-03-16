@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { readFile } from 'node:fs/promises';
-import { setRuntimePaths } from '../src/core/paths.js';
+import { getRuntimePaths, setRuntimePaths } from '../src/core/paths.js';
 import { NetworkSharedSessionStore, type NetworkSharedSession } from '../src/network/shared-sessions.js';
 
 function readFlag(args: string[], name: string): string | undefined {
@@ -20,7 +20,8 @@ if (!home || !sessionFile) {
 
 setRuntimePaths({ home, mode: 'edge' });
 const payload = JSON.parse(await readFile(sessionFile, 'utf-8')) as NetworkSharedSession;
-const store = new NetworkSharedSessionStore(`${home}/network/network-sessions.json`, `${home}/network/network-events.json`);
+const paths = getRuntimePaths();
+const store = new NetworkSharedSessionStore(paths.networkSessionsFile, paths.networkEventsFile);
 await store.load();
 await store.upsertSession(payload);
 console.log(payload.networkSessionId);

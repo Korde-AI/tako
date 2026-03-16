@@ -61,6 +61,24 @@ const events = await client.fetchPendingSessionEvents(identity.nodeId);
 let handled = 0;
 
 for (const event of events) {
+  if (!networkSessions.get(event.networkSessionId)) {
+    const now = new Date().toISOString();
+    await networkSessions.upsertSession({
+      networkSessionId: event.networkSessionId,
+      projectId: event.projectId,
+      projectSlug: typeof event.payload.metadata?.projectSlug === 'string' ? event.payload.metadata.projectSlug : undefined,
+      hostNodeId: event.fromNodeId,
+      participantNodeIds: Array.from(new Set([identity.nodeId, event.fromNodeId])),
+      participantPrincipalIds: typeof event.payload.metadata?.participantPrincipalId === 'string'
+        ? [event.payload.metadata.participantPrincipalId]
+        : [],
+      localSessionBindings: [],
+      createdAt: now,
+      updatedAt: now,
+      lastEventAt: event.createdAt,
+      status: 'active',
+    });
+  }
   await networkSessions.appendEvent(event, 'received');
   if (event.type === 'delegation_request' && event.payload.delegationRequest) {
     handled++;
