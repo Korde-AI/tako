@@ -41,11 +41,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/shuyhere/tako"
+    "url": "https://github.com/Korde-AI/tako"
   },
-  "homepage": "https://github.com/shuyhere/tako#readme",
+  "homepage": "https://github.com/Korde-AI/tako#readme",
   "bugs": {
-    "url": "https://github.com/shuyhere/tako/issues"
+    "url": "https://github.com/Korde-AI/tako/issues"
   },
   "files": [
     "dist",

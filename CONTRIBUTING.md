@@ -11,7 +11,7 @@ Thanks for contributing.
 ## Local setup
 
 ```bash
-git clone https://github.com/shuyhere/tako.git
+git clone https://github.com/Korde-AI/tako.git
 cd tako
 npm install
 ```

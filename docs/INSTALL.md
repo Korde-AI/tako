@@ -61,7 +61,7 @@ bun add -g @shuyhere/takotako
 ### GitHub source fallback
 
 ```bash
-npm install -g github:shuyhere/tako
+npm install -g github:Korde-AI/tako
 ```
 
 Verify:
@@ -142,7 +142,7 @@ tako status
 ```bash
 npm install -g @shuyhere/takotako
 # or GitHub source fallback:
-# npm install -g github:shuyhere/tako
+# npm install -g github:Korde-AI/tako
 ```
 
 Then restart:
