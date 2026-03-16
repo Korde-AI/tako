@@ -1,14 +1,14 @@
 /**
  * Audit Logging — records every significant agent action.
  *
- * Logs to ~/.tako/logs/audit.jsonl with auto-rotation at 10MB.
+ * Logs to <home>/audit/audit.jsonl with auto-rotation at 10MB.
  * Supports filtering by agent, event type, and tail queries.
  */
 
 import { appendFile, stat, rename, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
+import { getRuntimePaths } from './paths.js';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -16,6 +16,7 @@ export type AuditEvent =
   | 'agent_run'
   | 'tool_call'
   | 'file_modify'
+  | 'message_received'
   | 'message_sent'
   | 'api_call'
   | 'browser_action'
@@ -23,12 +24,19 @@ export type AuditEvent =
   | 'permission_denied'
   | 'cron_run'
   | 'agent_spawn'
-  | 'agent_comms';
+  | 'agent_comms'
+  | 'session_start';
 
 export interface AuditEntry {
   timestamp: string;
   agentId: string;
   sessionId: string;
+  principalId?: string;
+  principalName?: string;
+  projectId?: string;
+  projectSlug?: string;
+  sharedSessionId?: string;
+  participantIds?: string[];
   event: AuditEvent;
   action: string;
   details: Record<string, unknown>;
@@ -62,7 +70,7 @@ export class AuditLogger {
 
   constructor(config: AuditConfig, logDir?: string) {
     this.config = config;
-    this.logDir = logDir ?? join(homedir(), '.tako', 'logs');
+    this.logDir = logDir ?? getRuntimePaths().auditDir;
     this.logPath = join(this.logDir, 'audit.jsonl');
   }
 
@@ -96,10 +104,13 @@ export class AuditLogger {
     args: Record<string, unknown>,
     success: boolean,
     durationMs?: number,
+    principal?: { principalId?: string; principalName?: string },
   ): Promise<void> {
     await this.log({
       agentId,
       sessionId,
+      principalId: principal?.principalId,
+      principalName: principal?.principalName,
       event: 'tool_call',
       action: toolName,
       details: {
@@ -120,10 +131,13 @@ export class AuditLogger {
     tokensUsed: number,
     durationMs: number,
     success: boolean,
+    principal?: { principalId?: string; principalName?: string },
   ): Promise<void> {
     await this.log({
       agentId,
       sessionId,
+      principalId: principal?.principalId,
+      principalName: principal?.principalName,
       event: 'agent_run',
       action: 'run',
       details: { model, tokensUsed, durationMs },
@@ -160,10 +174,13 @@ export class AuditLogger {
     channel: string,
     target: string,
     success: boolean,
+    principal?: { principalId?: string; principalName?: string },
   ): Promise<void> {
     await this.log({
       agentId,
       sessionId,
+      principalId: principal?.principalId,
+      principalName: principal?.principalName,
       event: 'message_sent',
       action: 'send',
       details: { channel, target },
@@ -180,10 +197,13 @@ export class AuditLogger {
     event: 'auth_failure' | 'permission_denied',
     action: string,
     details: Record<string, unknown>,
+    principal?: { principalId?: string; principalName?: string },
   ): Promise<void> {
     await this.log({
       agentId,
       sessionId,
+      principalId: principal?.principalId,
+      principalName: principal?.principalName,
       event,
       action,
       details,

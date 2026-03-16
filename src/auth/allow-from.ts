@@ -2,7 +2,7 @@
  * AllowFrom ACL — per-agent, per-channel access control.
  *
  * Stores allowlist config at:
- *   ~/.tako/credentials/<channel>-<agentId>-allowFrom.json
+ *   <home>/credentials/<channel>-<agentId>-allowFrom.json
  *
  * Modes:
  * - "open": anyone can talk (default — preserves existing behavior)
@@ -15,11 +15,11 @@
  * - After claim, the bot locks to allowlist mode. No one else can /claim again.
  */
 
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type { Tool, ToolResult, ToolContext } from '../tools/tool.js';
+import { getRuntimePaths } from '../core/paths.js';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -27,6 +27,7 @@ export type AllowFromMode = 'allowlist' | 'open';
 
 export interface AllowFromConfig {
   allowedUserIds: string[];
+  allowedPrincipalIds?: string[];
   mode: AllowFromMode;
   /** True once /claim has been used — prevents re-claiming. */
   claimed?: boolean;
@@ -35,7 +36,7 @@ export interface AllowFromConfig {
 // ─── Paths ──────────────────────────────────────────────────────────
 
 function getCredentialsDir(): string {
-  return join(homedir(), '.tako', 'credentials');
+  return getRuntimePaths().credentialsDir;
 }
 
 function getAllowFromPath(channel: string, agentId: string): string {
@@ -51,7 +52,13 @@ export async function loadAllowFrom(channel: string, agentId: string): Promise<A
   }
   try {
     const raw = await readFile(filePath, 'utf-8');
-    return JSON.parse(raw) as AllowFromConfig;
+    const parsed = JSON.parse(raw) as AllowFromConfig;
+    return {
+      allowedUserIds: parsed.allowedUserIds ?? [],
+      allowedPrincipalIds: parsed.allowedPrincipalIds ?? [],
+      mode: parsed.mode ?? 'open',
+      claimed: parsed.claimed,
+    };
   } catch {
     return { allowedUserIds: [], mode: 'open' };
   }
@@ -74,9 +81,11 @@ export async function isUserAllowed(
   channel: string,
   agentId: string,
   userId: string,
+  principalId?: string,
 ): Promise<boolean> {
   const config = await loadAllowFrom(channel, agentId);
   if (config.mode === 'open') return true;
+  if (principalId && config.allowedPrincipalIds?.includes(principalId)) return true;
   return config.allowedUserIds.includes(userId);
 }
 
@@ -100,6 +109,7 @@ export async function claimOwner(
   channel: string,
   agentId: string,
   userId: string,
+  principalId?: string,
 ): Promise<{ success: boolean; alreadyClaimed: boolean }> {
   const already = await isClaimed(channel, agentId);
   if (already) {
@@ -107,6 +117,7 @@ export async function claimOwner(
   }
   await saveAllowFrom(channel, agentId, {
     allowedUserIds: [userId],
+    allowedPrincipalIds: principalId ? [principalId] : [],
     mode: 'allowlist',
     claimed: true,
   });

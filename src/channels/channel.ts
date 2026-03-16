@@ -36,6 +36,8 @@ export interface InboundMessage {
     id: string;
     /** Display name */
     name: string;
+    /** Tako principal ID once resolved on the edge runtime */
+    principalId?: string;
     /** Additional platform-specific metadata */
     meta?: Record<string, unknown>;
   };

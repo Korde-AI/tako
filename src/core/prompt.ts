@@ -22,6 +22,9 @@ import { hostname } from 'node:os';
 import { generateRepoMap } from './self-awareness.js';
 import type { Tool } from '../tools/tool.js';
 import type { LoadedSkill } from '../skills/types.js';
+import type { ExecutionContext } from './execution-context.js';
+import { getRuntimePaths } from './paths.js';
+import { getProjectPrivateMemoryDir, getProjectSharedMemoryDir } from '../memory/scopes.js';
 
 /** Max characters per bootstrap file (prevents token blowout). */
 const BOOTSTRAP_MAX_CHARS = 20_000;
@@ -67,6 +70,8 @@ export interface PromptParts {
   safety?: string;
   /** Sandbox context info */
   sandboxInfo?: string;
+  /** Platform capabilities (ACP, sub-agents, tool style) */
+  capabilities?: string;
 }
 
 export class PromptBuilder {
@@ -79,6 +84,11 @@ export class PromptBuilder {
   private sandboxMode: string = 'off';
   private sandboxWorkspaceAccess: string = 'ro';
   private timezoneContext: string | null = null;
+  private executionContext: ExecutionContext | null = null;
+  private scopedMemoryContent: string | null = null;
+  private acpEnabled: boolean = false;
+  private acpAllowedAgents: string[] = [];
+  private acpDefaultAgent: string = 'claude';
 
   constructor(workspacePath: string) {
     this.workspacePath = workspacePath;
@@ -115,6 +125,13 @@ export class PromptBuilder {
     this.registeredTools = tools;
   }
 
+  /** Set ACP runtime availability for prompt injection. */
+  setAcpConfig(opts: { enabled: boolean; allowedAgents?: string[]; defaultAgent?: string }): void {
+    this.acpEnabled = opts.enabled;
+    this.acpAllowedAgents = opts.allowedAgents ?? [];
+    this.acpDefaultAgent = opts.defaultAgent ?? 'claude';
+  }
+
   /** Set loaded skills for the skills section. */
   setSkills(skills: LoadedSkill[]): void {
     this.loadedSkills = skills;
@@ -128,6 +145,15 @@ export class PromptBuilder {
   /** Set the working directory for runtime context. */
   setWorkingDir(dir: string): void {
     this.workingDir = dir;
+  }
+
+  /** Set the current execution context for future prompt visibility rules. */
+  setExecutionContext(ctx: ExecutionContext | null): void {
+    this.executionContext = ctx;
+  }
+
+  setScopedMemoryContent(content: string | null): void {
+    this.scopedMemoryContent = content;
   }
 
   /**
@@ -164,6 +190,7 @@ export class PromptBuilder {
         parts.files.set(file, await this.loadFile(file));
       }
       parts.runtime = this.buildRuntimeContext();
+      parts.capabilities = this.buildCapabilitiesSection();
       return this.assemble(parts, 'minimal');
     }
 
@@ -172,10 +199,9 @@ export class PromptBuilder {
       parts.files.set(file, await this.loadFile(file));
     }
 
-    // Curated memory: try memory/MEMORY.md first, fall back to workspace root
-    let memory = await this.loadFile('memory/MEMORY.md', false);
+    let memory = this.scopedMemoryContent;
     if (!memory) {
-      memory = await this.loadFile('MEMORY.md', false);
+      memory = await this.loadScopedCuratedMemory();
     }
     if (memory) {
       parts.memory = memory;
@@ -199,6 +225,9 @@ export class PromptBuilder {
     // Safety guidelines
     parts.safety = this.buildSafetySection();
 
+    // Platform capabilities (ACP, sub-agents, tool style)
+    parts.capabilities = this.buildCapabilitiesSection();
+
     // Runtime context
     parts.runtime = this.buildRuntimeContext();
 
@@ -206,6 +235,37 @@ export class PromptBuilder {
     // Not injected into every prompt to save context space.
 
     return this.assemble(parts, 'full');
+  }
+
+  private async loadScopedCuratedMemory(): Promise<string> {
+    if (this.executionContext?.projectId && this.executionContext.principalId) {
+      const paths = getRuntimePaths();
+      const chunks: string[] = [];
+      const shared = await this.loadMemoryFile(getProjectSharedMemoryDir(paths, this.executionContext.projectId), 'project-shared');
+      if (shared) chunks.push(shared);
+      const privateMemory = await this.loadMemoryFile(
+        getProjectPrivateMemoryDir(paths, this.executionContext.projectId, this.executionContext.principalId),
+        'project-private',
+      );
+      if (privateMemory) chunks.push(privateMemory);
+      return chunks.join('\n\n---\n\n');
+    }
+
+    // Curated solo memory: try memory/MEMORY.md first, fall back to workspace root
+    let memory = await this.loadFile('memory/MEMORY.md', false);
+    if (!memory) {
+      memory = await this.loadFile('MEMORY.md', false);
+    }
+    return memory;
+  }
+
+  private async loadMemoryFile(root: string, label: string): Promise<string> {
+    try {
+      const content = await readFile(join(root, 'MEMORY.md'), 'utf-8');
+      return `# ${label}\n\n${content}`;
+    } catch {
+      return '';
+    }
   }
 
   /**
@@ -322,6 +382,73 @@ export class PromptBuilder {
   }
 
   /** Build runtime context section. */
+  /**
+   * Build the platform capabilities section.
+   * Injects knowledge about Tako's features so every agent knows how to use them.
+   * Inspired by OpenClaw's ## Tooling injection.
+   */
+  private buildCapabilitiesSection(): string {
+    const lines: string[] = [
+      '# Platform Capabilities',
+      '',
+      '## Sub-Agent Spawning',
+      'You can spawn sub-agents for parallel or complex work using `sessions_spawn`.',
+      'Use `subagents` tool to list, steer, or kill spawned sub-agents.',
+      'Sub-agents auto-announce results back to you. Do NOT poll in loops — wait for completion events.',
+      '',
+    ];
+
+    if (this.acpEnabled) {
+      lines.push(
+        '## ACP (External Coding Agents)',
+        'Tako has a full ACP runtime. Use `sessions_spawn` with `runtime: "acp"` to spawn external coding agents.',
+        '',
+        '### Usage',
+        '```',
+        'sessions_spawn(',
+        '  runtime: "acp",',
+        `  agentId: "${this.acpDefaultAgent}",  // ${this.acpAllowedAgents.join(', ')}`,
+        '  task: "implement feature X",',
+        '  thread: true,       // Creates a Discord thread for the session',
+        '  mode: "session",    // "session" for persistent, "run" for one-shot',
+        '  cwd: "/path/to/repo",',
+        '  label: "feature-x",',
+        ')',
+        '```',
+        '',
+        '### Behavior',
+        '- `thread: true` → auto-creates Discord thread, binds ACP session to it',
+        '- Messages in the thread route directly to the ACP coding agent',
+        '- Completion summary posted to thread (files changed, duration)',
+        '- `mode: "session"` keeps session alive for follow-ups in-thread',
+        `- Available agents: ${this.acpAllowedAgents.join(', ')}`,
+        `- Default agent: ${this.acpDefaultAgent}`,
+        '',
+        '### Important',
+        '- ONLY use `sessions_spawn(runtime: "acp")` for ACP sessions — do NOT use `acp_spawn`, `acp_session_start`, or `exec` with `acpx`/`claude` commands',
+        '- Do NOT poll for ACP status — completion is push-based via thread',
+        '- For thread-bound sessions, use `mode: "session"` with `thread: true`',
+        '- On Discord, default ACP requests to `thread: true`, `mode: "session"` unless user asks otherwise',
+        '',
+      );
+    }
+
+    lines.push(
+      '## Tool Call Style',
+      '- Do not narrate routine tool calls — just call the tool.',
+      '- Narrate only for multi-step work, complex problems, or sensitive actions.',
+      '- When a tool exists for an action, use it directly instead of asking the user to run CLI commands.',
+      '',
+      '## Communication',
+      '- Always respond to user messages, even if you cannot fulfill the request.',
+      '- Never stay silent. If you cannot do something, say so and suggest alternatives.',
+      '- Keep responses concise and actionable.',
+      '',
+    );
+
+    return lines.join('\n');
+  }
+
   private buildRuntimeContext(): string {
     const now = new Date();
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -404,6 +531,9 @@ export class PromptBuilder {
 
       // Safety guidelines
       if (parts.safety) sections.push(parts.safety);
+
+      // Platform capabilities (ACP, sub-agents, tool style)
+      if (parts.capabilities) sections.push(parts.capabilities);
 
       // Repo structure map — removed from default prompt (progressive disclosure)
       // Agent can use self-awareness tool or `read` to explore repo when needed.

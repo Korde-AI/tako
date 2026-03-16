@@ -4,9 +4,10 @@
  */
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { resolve, dirname } from 'node:path';
+import { dirname } from 'node:path';
 import type { Tool, ToolContext, ToolResult } from './tool.js';
 import type { CacheManager } from '../cache/manager.js';
+import { resolvePathWithinAllowedRoot } from './root-policy.js';
 
 // ─── Cache integration ──────────────────────────────────────────────
 
@@ -41,7 +42,11 @@ export const readTool: Tool = {
 
   async execute(params: unknown, ctx: ToolContext): Promise<ToolResult> {
     const { path, start, end } = params as ReadParams;
-    const fullPath = resolve(ctx.workDir, path);
+    const resolved = resolvePathWithinAllowedRoot(ctx, path);
+    if (!resolved.ok) {
+      return { output: '', success: false, error: resolved.error };
+    }
+    const fullPath = resolved.fullPath;
     try {
       // Check file cache first
       let content: string;
@@ -89,8 +94,13 @@ export const writeTool: Tool = {
 
   async execute(params: unknown, ctx: ToolContext): Promise<ToolResult> {
     const { path, content } = params as WriteParams;
-    const fullPath = resolve(ctx.workDir, path);
+    const resolved = resolvePathWithinAllowedRoot(ctx, path);
+    if (!resolved.ok) {
+      return { output: '', success: false, error: resolved.error };
+    }
+    const fullPath = resolved.fullPath;
     try {
+      await mkdir(dirname(fullPath), { recursive: true });
       await writeFile(fullPath, content, 'utf-8');
       // Invalidate cache on write
       cacheManager?.onFileWrite(fullPath);
@@ -125,7 +135,11 @@ export const editTool: Tool = {
 
   async execute(params: unknown, ctx: ToolContext): Promise<ToolResult> {
     const { path, old_string, new_string } = params as EditParams;
-    const fullPath = resolve(ctx.workDir, path);
+    const resolved = resolvePathWithinAllowedRoot(ctx, path);
+    if (!resolved.ok) {
+      return { output: '', success: false, error: resolved.error };
+    }
+    const fullPath = resolved.fullPath;
     try {
       const content = await readFile(fullPath, 'utf-8');
       if (!content.includes(old_string)) {
@@ -164,7 +178,11 @@ export const applyPatchTool: Tool = {
 
   async execute(params: unknown, ctx: ToolContext): Promise<ToolResult> {
     const { path, patch } = params as ApplyPatchParams;
-    const fullPath = resolve(ctx.workDir, path);
+    const resolved = resolvePathWithinAllowedRoot(ctx, path);
+    if (!resolved.ok) {
+      return { output: '', success: false, error: resolved.error };
+    }
+    const fullPath = resolved.fullPath;
     try {
       // Read existing file (may not exist for new files)
       let content: string;

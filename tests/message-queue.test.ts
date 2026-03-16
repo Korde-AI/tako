@@ -7,6 +7,8 @@ function makeMessage(overrides: Partial<QueuedMessage> = {}): QueuedMessage {
     content: 'hello',
     channelId: 'discord:123',
     authorId: 'user1',
+    principalId: 'prn-user1',
+    principalName: 'user1',
     timestamp: Date.now(),
     messageId: `msg-${Math.random().toString(36).slice(2)}`,
     ...overrides,
@@ -237,8 +239,8 @@ describe('MessageQueue', () => {
     it('includes author IDs for group chat (multiple authors)', () => {
       const now = Date.now();
       const result = MessageQueue.mergeMessages([
-        makeMessage({ content: 'hi', authorId: 'alice', timestamp: now }),
-        makeMessage({ content: 'hey', authorId: 'bob', timestamp: now + 1000 }),
+        makeMessage({ content: 'hi', authorId: 'alice-raw', principalId: 'prn-alice', principalName: 'alice', timestamp: now }),
+        makeMessage({ content: 'hey', authorId: 'bob-raw', principalId: 'prn-bob', principalName: 'bob', timestamp: now + 1000 }),
       ]);
 
       assert.ok(result.includes('[alice]: hi'));
@@ -248,13 +250,24 @@ describe('MessageQueue', () => {
     it('omits author IDs for single-user messages', () => {
       const now = Date.now();
       const result = MessageQueue.mergeMessages([
-        makeMessage({ content: 'one', authorId: 'user1', timestamp: now }),
-        makeMessage({ content: 'two', authorId: 'user1', timestamp: now + 1000 }),
+        makeMessage({ content: 'one', authorId: 'user1-raw', principalId: 'prn-user1', principalName: 'user1', timestamp: now }),
+        makeMessage({ content: 'two', authorId: 'user1-other-raw', principalId: 'prn-user1', principalName: 'user1', timestamp: now + 1000 }),
       ]);
 
       assert.ok(!result.includes('[user1]'));
       assert.ok(result.includes('one'));
       assert.ok(result.includes('two'));
+    });
+
+    it('falls back to authorId when principal identity is missing', () => {
+      const now = Date.now();
+      const result = MessageQueue.mergeMessages([
+        makeMessage({ content: 'hi', principalId: undefined, principalName: undefined, authorId: 'alice', timestamp: now }),
+        makeMessage({ content: 'hey', principalId: undefined, principalName: undefined, authorId: 'bob', timestamp: now + 1000 }),
+      ]);
+
+      assert.ok(result.includes('[alice]: hi'));
+      assert.ok(result.includes('[bob]: hey'));
     });
 
     it('returns empty string for empty array', () => {

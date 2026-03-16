@@ -34,11 +34,13 @@ import type { SkillCommandSpec } from '../commands/skill-commands.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import { TypingManager } from './typing.js';
 import { readFile } from 'node:fs/promises';
+import { extractPdfContent } from '../media/pdf-extract.js';
 import { ToolLoopDetector } from './tool-loop-detector.js';
 import type { UsageTracker } from './usage-tracker.js';
 import type { ThinkingManager } from './thinking.js';
 import type { ReactionManager } from './reactions.js';
 import type { TimezoneManager } from './timezone.js';
+import { toCommandContext } from './execution-context.js';
 
 /** Sentinel yielded after each intermediate turn so callers can flush text. */
 
@@ -83,6 +85,52 @@ function detectImageMediaType(buffer: Buffer, fallback = 'image/png'): string {
     && buffer.subarray(0, 4).toString('ascii') === 'RIFF'
     && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
   return fallback;
+}
+
+/** MIME types for text-readable files that can be included inline. */
+const TEXT_FILE_EXTENSIONS = new Set([
+  '.txt', '.md', '.json', '.csv', '.xml', '.yaml', '.yml', '.toml',
+  '.html', '.htm', '.css', '.js', '.ts', '.py', '.sh', '.log', '.ini', '.cfg',
+]);
+
+function isTextFile(filename?: string, mimeType?: string): boolean {
+  if (mimeType?.startsWith('text/')) return true;
+  if (mimeType === 'application/json' || mimeType === 'application/xml') return true;
+  if (filename) {
+    const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase();
+    return TEXT_FILE_EXTENSIONS.has(ext);
+  }
+  return false;
+}
+
+function isPdf(mimeType?: string, filename?: string): boolean {
+  if (mimeType === 'application/pdf') return true;
+  if (filename?.toLowerCase().endsWith('.pdf')) return true;
+  return false;
+}
+
+/** Download an attachment from URL or local path into a Buffer. */
+async function downloadAttachment(source: string): Promise<{ buffer: Buffer; contentType?: string } | null> {
+  try {
+    if (source.startsWith('http://') || source.startsWith('https://')) {
+      const resp = await fetch(source);
+      if (!resp.ok) {
+        console.warn(`[agent-loop] Failed to fetch attachment ${source}: HTTP ${resp.status}`);
+        return null;
+      }
+      return {
+        buffer: Buffer.from(await resp.arrayBuffer()),
+        contentType: resp.headers.get('content-type') ?? undefined,
+      };
+    } else if (source.startsWith('file://')) {
+      return { buffer: await readFile(new URL(source).pathname) };
+    } else {
+      return { buffer: await readFile(source) };
+    }
+  } catch (err) {
+    console.warn(`[agent-loop] Failed to download attachment ${source}:`, err instanceof Error ? err.message : err);
+    return null;
+  }
 }
 
 /** Dependencies injected into the agent loop. */
@@ -352,13 +400,19 @@ export class AgentLoop {
       await hooks.emit('agent_start', {
         event: 'agent_start',
         sessionId: session.id,
-        data: { userMessage },
+        data: {
+          userMessage,
+          agentId: this.deps.agentId,
+          principalId: session.metadata?.principalId,
+          principalName: session.metadata?.principalName,
+        },
         timestamp: Date.now(),
       });
     }
 
     // 1a. Rate limiting check
-    const authorId = session.metadata?.authorId as string | undefined;
+    const authorId = session.metadata?.principalId as string | undefined
+      ?? session.metadata?.authorId as string | undefined;
     const channelId = session.metadata?.channelId as string | undefined;
     if (authorId && channelId) {
       const rateLimitMsg = checkRateLimit(authorId, channelId);
@@ -412,12 +466,22 @@ export class AgentLoop {
 
       // Built-in commands (/help, /status, etc.)
       if (this.deps.commandRegistry) {
+        const executionContext = session.metadata?.executionContext as import('./execution-context.js').ExecutionContext | undefined;
         const builtinResult = await this.deps.commandRegistry.handle(userMessage, {
-          channelId: session.metadata?.channelId as string ?? '',
-          authorId: session.metadata?.authorId as string ?? '',
-          authorName: session.metadata?.authorName as string ?? '',
+          ...(executionContext
+            ? toCommandContext({ ...executionContext, sessionId: session.id })
+            : {
+                channelId: session.metadata?.channelId as string ?? '',
+                authorId: session.metadata?.authorId as string ?? '',
+                authorName: session.metadata?.authorName as string ?? '',
+                principalId: session.metadata?.principalId as string | undefined,
+                principalName: session.metadata?.principalName as string | undefined,
+                projectId: session.metadata?.projectId as string | undefined,
+                projectSlug: session.metadata?.projectSlug as string | undefined,
+                projectRole: session.metadata?.projectRole as string | undefined,
+                agentId: this.deps.agentId ?? '',
+              }),
           session,
-          agentId: this.deps.agentId ?? '',
         });
         if (builtinResult !== null) {
           this.deps.typingManager?.stop(chatId);
@@ -437,6 +501,7 @@ export class AgentLoop {
             workspaceRoot: this.deps.workspaceRoot ?? process.cwd(),
             agentId: this.deps.agentId,
             agentRole: this.deps.agentRole ?? 'admin',
+            executionContext: session.metadata?.executionContext as import('./execution-context.js').ExecutionContext | undefined,
           },
         };
         const result = await dispatchSkillCommand(parsed, this.deps.skillCommandSpecs, dispatchCtx);
@@ -487,6 +552,9 @@ export class AgentLoop {
     if (this.deps.workspaceRoot) {
       promptBuilder.setWorkingDir(this.deps.workspaceRoot);
     }
+    promptBuilder.setExecutionContext(
+      session.metadata?.executionContext as import('./execution-context.js').ExecutionContext | null ?? null,
+    );
     // Inject timezone context
     if (this.deps.timezoneManager) {
       promptBuilder.setTimezoneContext(this.deps.timezoneManager.getContextString());
@@ -519,55 +587,69 @@ export class AgentLoop {
       delete session.metadata?._injectedSkillName;
     }
 
-    // 3. Append user message to session (with image attachments as content blocks)
+    const projectBackgroundSummary = session.metadata?.projectBackgroundSummary as string | undefined;
+    if (projectBackgroundSummary?.trim()) {
+      systemPrompt += `\n\n---\n\n# Project Background\n\n${projectBackgroundSummary}`;
+    }
+
+    // 3. Append user message to session (with attachments as content blocks)
     const imageAttachments = attachments?.filter((a) => (a.type === 'image' || a.mimeType?.startsWith('image/')) && a.url) ?? [];
-    if (imageAttachments.length > 0) {
-      // Download images and convert to base64 for provider compatibility
-      const imageParts: import('../providers/provider.js').ContentPart[] = [];
-      for (const a of imageAttachments) {
-        try {
-          let buffer: Buffer | null = null;
-          let mediaTypeHint = a.mimeType || 'image/png';
-          const source = a.url!;
+    const fileAttachments = attachments?.filter((a) =>
+      a.url && a.type !== 'image' && !a.mimeType?.startsWith('image/')
+      && (a.type === 'file' || isPdf(a.mimeType, a.filename) || isTextFile(a.filename, a.mimeType))
+    ) ?? [];
 
-          if (source.startsWith('http://') || source.startsWith('https://')) {
-            const resp = await fetch(source);
-            if (!resp.ok) {
-              console.warn(`[agent-loop] Failed to fetch image ${source}: HTTP ${resp.status}`);
-              continue;
-            }
-            buffer = Buffer.from(await resp.arrayBuffer());
-            mediaTypeHint = a.mimeType || resp.headers.get('content-type') || mediaTypeHint;
-          } else if (source.startsWith('file://')) {
-            const filePath = new URL(source).pathname;
-            buffer = await readFile(filePath);
-          } else {
-            // Local filesystem path persisted by media storage.
-            buffer = await readFile(source);
-          }
+    const extraParts: import('../providers/provider.js').ContentPart[] = [];
+    let textPrefix = '';
 
-          const mediaType = detectImageMediaType(buffer, mediaTypeHint);
-          imageParts.push({
-            type: 'image_base64',
-            media_type: mediaType,
-            data: buffer.toString('base64'),
-          });
-        } catch (err) {
-          console.warn(`[agent-loop] Failed to load image ${a.url}:`, err instanceof Error ? err.message : err);
-        }
+    // Process image attachments → base64 content parts
+    for (const a of imageAttachments) {
+      const dl = await downloadAttachment(a.url!);
+      if (!dl) continue;
+      const mediaType = detectImageMediaType(dl.buffer, a.mimeType || dl.contentType || 'image/png');
+      extraParts.push({
+        type: 'image_base64',
+        media_type: mediaType,
+        data: dl.buffer.toString('base64'),
+      });
+    }
+
+    // Process file attachments → PDF document parts or text prefix
+    for (const a of fileAttachments) {
+      const dl = await downloadAttachment(a.url!);
+      if (!dl) continue;
+
+      if (isPdf(a.mimeType ?? dl.contentType, a.filename)) {
+        console.log(`[agent-loop] Processing PDF attachment: ${a.filename ?? 'unknown.pdf'}`);
+        // Send as native document content part (Anthropic supports this)
+        extraParts.push({
+          type: 'document',
+          source: {
+            type: 'base64',
+            media_type: 'application/pdf',
+            data: dl.buffer.toString('base64'),
+          },
+        });
+      } else if (isTextFile(a.filename, a.mimeType ?? dl.contentType)) {
+        console.log(`[agent-loop] Processing text attachment: ${a.filename ?? 'unknown.txt'}`);
+        const text = dl.buffer.toString('utf-8');
+        textPrefix += `[Attached file: ${a.filename ?? 'file'}]\n${text}\n\n`;
       }
+    }
 
-      if (imageParts.length > 0) {
-        const contentParts: import('../providers/provider.js').ContentPart[] = [
-          { type: 'text', text: userMessage || 'What is in this image?' },
-          ...imageParts,
-        ];
-        session.messages.push({ role: 'user', content: contentParts });
-      } else {
-        session.messages.push({ role: 'user', content: userMessage });
-      }
+    // Build the user message
+    const finalMessage = textPrefix
+      ? textPrefix + (userMessage || '')
+      : (userMessage || (extraParts.length > 0 ? 'What is in this file?' : ''));
+
+    if (extraParts.length > 0) {
+      const contentParts: import('../providers/provider.js').ContentPart[] = [
+        { type: 'text', text: finalMessage },
+        ...extraParts,
+      ];
+      session.messages.push({ role: 'user', content: contentParts });
     } else {
-      session.messages.push({ role: 'user', content: userMessage });
+      session.messages.push({ role: 'user', content: finalMessage });
     }
 
     // 4. Assemble context
@@ -800,15 +882,22 @@ export class AgentLoop {
       // Execute tool calls
       const roleName = this.deps.agentRole ?? 'admin';
       const role = getRole(roleName);
+      const executionContext = session.metadata?.executionContext as import('./execution-context.js').ExecutionContext | undefined;
+      const allowedToolRoot = executionContext?.allowedToolRoot
+        ?? executionContext?.projectRoot
+        ?? this.deps.workspaceRoot
+        ?? process.cwd();
       const toolCtx: ToolContext = {
         sessionId: session.id,
-        workDir: this.deps.workspaceRoot ?? process.cwd(),
+        workDir: allowedToolRoot,
         workspaceRoot: this.deps.workspaceRoot ?? process.cwd(),
+        allowedToolRoot,
         agentId: this.deps.agentId,
         agentRole: roleName,
         channelType: session.metadata?.channelType as string | undefined,
         channelTarget: session.metadata?.channelTarget as string | undefined,
         channel: session.metadata?.channelRef as unknown,
+        executionContext,
       };
 
       for (const tc of pendingToolCalls) {
@@ -842,14 +931,25 @@ export class AgentLoop {
             success: false,
           };
 
-          if (hooks) {
-            await hooks.emit('after_tool_call', {
-              event: 'after_tool_call',
-              sessionId: session.id,
-              data: { toolName: tc.name, result: deniedResult },
-              timestamp: Date.now(),
-            });
-          }
+        if (hooks) {
+          await hooks.emit('after_tool_call', {
+            event: 'after_tool_call',
+            sessionId: session.id,
+            data: {
+              toolName: tc.name,
+              params: tc.input,
+              result: deniedResult,
+              agentId: this.deps.agentId,
+              principalId: session.metadata?.principalId,
+              principalName: session.metadata?.principalName,
+              projectId: session.metadata?.projectId,
+              projectSlug: session.metadata?.projectSlug,
+              sharedSessionId: session.metadata?.sharedSessionId,
+              participantIds: session.metadata?.participantIds,
+            },
+            timestamp: Date.now(),
+          });
+        }
 
           const toolMsg: ChatMessage = {
             role: 'tool',
@@ -864,7 +964,17 @@ export class AgentLoop {
           await hooks.emit('before_tool_call', {
             event: 'before_tool_call',
             sessionId: session.id,
-            data: { toolName: tc.name, params: tc.input },
+            data: {
+              toolName: tc.name,
+              params: tc.input,
+              agentId: this.deps.agentId,
+              principalId: session.metadata?.principalId,
+              principalName: session.metadata?.principalName,
+              projectId: session.metadata?.projectId,
+              projectSlug: session.metadata?.projectSlug,
+              sharedSessionId: session.metadata?.sharedSessionId,
+              participantIds: session.metadata?.participantIds,
+            },
             timestamp: Date.now(),
           });
         }
@@ -875,11 +985,40 @@ export class AgentLoop {
           const input = tc.input as Record<string, unknown>;
           // Validate path arguments
           if (typeof input.path === 'string') {
-            const pathCheck = validator.validatePath(
+            const pathCheck = validator.validatePathWithinRoot(
               input.path, toolCtx.workDir,
               ['write', 'edit', 'apply_patch'].includes(tc.name),
+              allowedToolRoot,
             );
             if (!pathCheck.allowed) {
+              const deniedResult: ToolResult = {
+                output: `Blocked: ${pathCheck.blockReason}`,
+                success: false,
+                error: pathCheck.blockReason,
+              };
+              if (hooks) {
+                await hooks.emit('after_tool_call', {
+                  event: 'after_tool_call',
+                  sessionId: session.id,
+                  data: {
+                    toolName: tc.name,
+                    params: tc.input,
+                    result: deniedResult,
+                    denied: true,
+                    denialType: 'path',
+                    allowedToolRoot,
+                    attemptedPath: input.path,
+                    agentId: this.deps.agentId,
+                    principalId: session.metadata?.principalId,
+                    principalName: session.metadata?.principalName,
+                    projectId: session.metadata?.projectId,
+                    projectSlug: session.metadata?.projectSlug,
+                    sharedSessionId: session.metadata?.sharedSessionId,
+                    participantIds: session.metadata?.participantIds,
+                  },
+                  timestamp: Date.now(),
+                });
+              }
               const toolMsg: ChatMessage = {
                 role: 'tool',
                 content: `Blocked: ${pathCheck.blockReason}`,
@@ -892,8 +1031,35 @@ export class AgentLoop {
           }
           // Validate command arguments
           if (typeof input.command === 'string' && ['exec', 'process'].includes(tc.name)) {
-            const cmdCheck = validator.validateCommand(input.command);
+            const cmdCheck = validator.validateCommandWithinRoot(input.command, allowedToolRoot);
             if (!cmdCheck.allowed) {
+              const deniedResult: ToolResult = {
+                output: `Blocked: ${cmdCheck.blockReason}`,
+                success: false,
+                error: cmdCheck.blockReason,
+              };
+              if (hooks) {
+                await hooks.emit('after_tool_call', {
+                  event: 'after_tool_call',
+                  sessionId: session.id,
+                  data: {
+                    toolName: tc.name,
+                    params: tc.input,
+                    result: deniedResult,
+                    denied: true,
+                    denialType: 'command',
+                    allowedToolRoot,
+                    agentId: this.deps.agentId,
+                    principalId: session.metadata?.principalId,
+                    principalName: session.metadata?.principalName,
+                    projectId: session.metadata?.projectId,
+                    projectSlug: session.metadata?.projectSlug,
+                    sharedSessionId: session.metadata?.sharedSessionId,
+                    participantIds: session.metadata?.participantIds,
+                  },
+                  timestamp: Date.now(),
+                });
+              }
               const toolMsg: ChatMessage = {
                 role: 'tool',
                 content: `Blocked: ${cmdCheck.blockReason}`,
@@ -922,7 +1088,10 @@ export class AgentLoop {
 
         const tool = toolRegistry.getTool(tc.name);
         let result: ToolResult;
-        const toolTimeoutMs = this.config.toolCallTimeoutMs ?? 30_000;
+        const defaultTimeoutMs = this.config.toolCallTimeoutMs ?? 30_000;
+        // Long-running tools get extended timeout (ACP sessions, sub-agent spawns)
+        const LONG_RUNNING_TOOLS = new Set(['sessions_spawn', 'acp_spawn', 'acp_session_start', 'acp_session_send']);
+        const toolTimeoutMs = LONG_RUNNING_TOOLS.has(tc.name) ? Math.max(defaultTimeoutMs, 120_000) : defaultTimeoutMs;
         try {
           if (tool) {
             // Race the tool against a hard timeout so a single stuck call
@@ -951,7 +1120,18 @@ export class AgentLoop {
           await hooks.emit('after_tool_call', {
             event: 'after_tool_call',
             sessionId: session.id,
-            data: { toolName: tc.name, result },
+            data: {
+              toolName: tc.name,
+              params: tc.input,
+              result,
+              agentId: this.deps.agentId,
+              principalId: session.metadata?.principalId,
+              principalName: session.metadata?.principalName,
+              projectId: session.metadata?.projectId,
+              projectSlug: session.metadata?.projectSlug,
+              sharedSessionId: session.metadata?.sharedSessionId,
+              participantIds: session.metadata?.participantIds,
+            },
             timestamp: Date.now(),
           });
         }
@@ -1016,7 +1196,17 @@ export class AgentLoop {
         await hooks.emit('agent_end', {
           event: 'agent_end',
           sessionId: session.id,
-          data: { turns },
+          data: {
+            turns,
+            agentId: this.deps.agentId,
+            model: this.getModel(),
+            principalId: session.metadata?.principalId,
+            principalName: session.metadata?.principalName,
+            projectId: session.metadata?.projectId,
+            projectSlug: session.metadata?.projectSlug,
+            sharedSessionId: session.metadata?.sharedSessionId,
+            participantIds: session.metadata?.participantIds,
+          },
           timestamp: Date.now(),
         });
       }

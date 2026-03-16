@@ -7,6 +7,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Session } from '../gateway/session.js';
+import type { ExecutionContext } from '../core/execution-context.js';
 import type { SkillCommandSpec } from './skill-commands.js';
 import type { LoadedSkill } from '../skills/types.js';
 import { buildSkillCommands } from './skill-commands.js';
@@ -17,8 +18,18 @@ export interface CommandContext {
   channelId: string;
   authorId: string;
   authorName: string;
+  principalId?: string;
+  principalName?: string;
+  projectId?: string;
+  projectSlug?: string;
+  projectRole?: string;
+  sharedSessionId?: string;
+  ownerPrincipalId?: string;
+  participantIds?: string[];
+  activeParticipantIds?: string[];
   session: Session;
   agentId: string;
+  executionContext?: ExecutionContext;
 }
 
 export interface CommandDeps {
@@ -41,6 +52,15 @@ export interface CommandDeps {
   getQueueStatus?: () => Array<{ sessionId: string; depth: number; oldestMs: number }>;
   usageTracker?: UsageTracker;
   runAcpCommand?: (args: string, ctx: CommandContext) => Promise<string>;
+  getProjectBackground?: (projectId: string) => Promise<string | null>;
+  listPatchApprovals?: (projectId: string) => Promise<Array<{ approvalId: string; artifactName: string; status: string }>>;
+  resolvePatchApproval?: (
+    projectId: string,
+    approvalId: string,
+    decision: 'approved' | 'denied',
+    reviewedByPrincipalId?: string,
+    reason?: string,
+  ) => Promise<{ approvalId: string; artifactName: string; status: string }>;
 }
 
 interface Command {
@@ -189,6 +209,10 @@ export class CommandRegistry {
           model: '/model [name] — View or switch active model',
           agents: '/agents — List available agents',
           whoami: '/whoami — Show current agent identity',
+          projectbg: '/projectbg — Show current shared project background',
+          patches: '/patches — List patch approvals for current project',
+          patchapprove: '/patchapprove <approvalId> [reason] — Approve a patch for current project',
+          patchdeny: '/patchdeny <approvalId> [reason] — Deny a patch for current project',
           queue: '/queue <off|collect|debounce> — Set message queue mode',
           usage: '/usage [cost|off|tokens|full] — Show token/cost usage',
           approve: '/approve <id> <allow|deny|allow-always> — Resolve exec approval request',
@@ -334,6 +358,13 @@ export class CommandRegistry {
         }
 
         // Runtime info
+        lines.push(`**Principal:** ${ctx.principalName ?? ctx.authorName}`);
+        if (ctx.principalId) lines.push(`**Principal ID:** ${ctx.principalId}`);
+        lines.push(`**Author ID:** ${ctx.authorId}`);
+        if (ctx.projectId) lines.push(`**Project:** ${ctx.projectSlug ?? ctx.projectId}`);
+        if (ctx.projectRole) lines.push(`**Project Role:** ${ctx.projectRole}`);
+        if (ctx.sharedSessionId) lines.push(`**Shared Session:** ${ctx.sharedSessionId}`);
+        if (ctx.participantIds) lines.push(`**Participants:** ${ctx.participantIds.length}`);
         lines.push(`**Agent:** ${ctx.agentId}`);
         lines.push(`**Model:** ${model}`);
         lines.push(`**Workspace:** ${workspace}`);
@@ -344,6 +375,70 @@ export class CommandRegistry {
         if (skills > 0) lines.push(`**Skills:** ${skills} loaded`);
 
         return lines.join('\n');
+      },
+    });
+
+    this.register({
+      name: 'projectbg',
+      description: 'Show current shared project background',
+      handler: async (_args, ctx) => {
+        if (!ctx.projectId || !this.deps.getProjectBackground) {
+          return 'No active project background.';
+        }
+        return await this.deps.getProjectBackground(ctx.projectId) ?? 'No project background snapshot yet.';
+      },
+    });
+
+    this.register({
+      name: 'patches',
+      description: 'List patch approvals for current project',
+      handler: async (_args, ctx) => {
+        if (!ctx.projectId || !this.deps.listPatchApprovals) {
+          return 'No active project approvals.';
+        }
+        const rows = await this.deps.listPatchApprovals(ctx.projectId);
+        if (rows.length === 0) return 'No patch approvals found.';
+        return ['**Patch Approvals**', ...rows.map((row) => `- ${row.approvalId}  ${row.artifactName}  ${row.status}`)].join('\n');
+      },
+    });
+
+    this.register({
+      name: 'patchapprove',
+      description: 'Approve a patch for current project',
+      handler: async (args, ctx) => {
+        if (!ctx.projectId || !this.deps.resolvePatchApproval) {
+          return 'No active project approval handler.';
+        }
+        const [approvalId, ...reasonParts] = args.trim().split(/\s+/).filter(Boolean);
+        if (!approvalId) return 'Usage: /patchapprove <approvalId> [reason]';
+        const result = await this.deps.resolvePatchApproval(
+          ctx.projectId,
+          approvalId,
+          'approved',
+          ctx.principalId,
+          reasonParts.join(' ') || undefined,
+        );
+        return `Approved ${result.artifactName} (${result.approvalId}).`;
+      },
+    });
+
+    this.register({
+      name: 'patchdeny',
+      description: 'Deny a patch for current project',
+      handler: async (args, ctx) => {
+        if (!ctx.projectId || !this.deps.resolvePatchApproval) {
+          return 'No active project approval handler.';
+        }
+        const [approvalId, ...reasonParts] = args.trim().split(/\s+/).filter(Boolean);
+        if (!approvalId) return 'Usage: /patchdeny <approvalId> [reason]';
+        const result = await this.deps.resolvePatchApproval(
+          ctx.projectId,
+          approvalId,
+          'denied',
+          ctx.principalId,
+          reasonParts.join(' ') || undefined,
+        );
+        return `Denied ${result.artifactName} (${result.approvalId}).`;
       },
     });
 
@@ -405,11 +500,11 @@ export class CommandRegistry {
           ].join('\n');
         }
 
-        const result = await claimOwner(channelType, ctx.agentId, ctx.authorId);
+        const result = await claimOwner(channelType, ctx.agentId, ctx.authorId, ctx.principalId);
         if (result.success) {
           return [
             '✅ **Claimed!**',
-            `You (${ctx.authorName} / \`${ctx.authorId}\`) are now the owner of this bot on **${channelType}**.`,
+            `You (${ctx.principalName ?? ctx.authorName} / \`${ctx.principalId ?? ctx.authorId}\`) are now the owner of this bot on **${channelType}**.`,
             '',
             '🔒 The bot is now in **allowlist mode** — only you can talk to it.',
             '',

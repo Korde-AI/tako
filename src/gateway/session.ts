@@ -452,7 +452,7 @@ export class SessionManager {
 
   /** Strip non-serializable runtime refs from metadata. */
   private stripRuntime(metadata: Record<string, unknown>): Record<string, unknown> {
-    const { channelRef, ...rest } = metadata;
+    const { channelRef, executionContext, ...rest } = metadata;
     return rest;
   }
 

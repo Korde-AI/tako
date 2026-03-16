@@ -77,23 +77,30 @@ export class ToolValidator {
    * Validate a file path argument.
    */
   validatePath(path: string, workDir: string, allowWrite: boolean): ValidationResult {
+    return this.validatePathWithinRoot(path, workDir, allowWrite, this.workspaceRoot);
+  }
+
+  validatePathWithinRoot(
+    path: string,
+    workDir: string,
+    allowWrite: boolean,
+    allowedRoot: string,
+  ): ValidationResult {
     if (this.config.level === 'off') {
       return { allowed: true, warnings: [] };
     }
 
     const warnings: string[] = [];
     const fullPath = isAbsolute(path) ? path : resolve(workDir, path);
-    const rel = relative(this.workspaceRoot, fullPath);
+    const rel = relative(allowedRoot, fullPath);
 
-    // Check for path traversal outside workspace
+    // Check for path traversal outside allowed root.
     if (rel.startsWith('..') || isAbsolute(rel)) {
-      if (allowWrite) {
-        const msg = `Path traversal outside workspace: ${path} resolves to ${fullPath}`;
-        if (this.config.level === 'strict') {
-          return { allowed: false, warnings: [], blockReason: msg };
-        }
-        warnings.push(msg);
+      const msg = `Path escapes allowed root: ${path} resolves to ${fullPath} outside ${allowedRoot}`;
+      if (this.config.level === 'strict') {
+        return { allowed: false, warnings: [], blockReason: msg };
       }
+      warnings.push(msg);
     }
 
     // Block writing to sensitive system paths
@@ -117,6 +124,10 @@ export class ToolValidator {
    * Validate a shell command argument.
    */
   validateCommand(command: string): ValidationResult {
+    return this.validateCommandWithinRoot(command, this.workspaceRoot);
+  }
+
+  validateCommandWithinRoot(command: string, allowedRoot: string): ValidationResult {
     if (this.config.level === 'off') {
       return { allowed: true, warnings: [] };
     }
@@ -126,6 +137,19 @@ export class ToolValidator {
     for (const { pattern, description } of DANGEROUS_COMMANDS) {
       if (pattern.test(command)) {
         const msg = `Dangerous command pattern: ${description}`;
+        if (this.config.level === 'strict') {
+          return { allowed: false, warnings: [], blockReason: msg };
+        }
+        warnings.push(msg);
+      }
+    }
+
+    const cdMatch = command.match(/\bcd\s+([^\s;&|]+)/);
+    if (cdMatch) {
+      const targetDir = resolve(allowedRoot, cdMatch[1]);
+      const rel = relative(allowedRoot, targetDir);
+      if (rel.startsWith('..') || isAbsolute(rel)) {
+        const msg = `Command changes directory outside allowed root: ${cdMatch[1]}`;
         if (this.config.level === 'strict') {
           return { allowed: false, warnings: [], blockReason: msg };
         }

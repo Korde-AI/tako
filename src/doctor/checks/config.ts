@@ -6,10 +6,10 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
 import type { TakoConfig } from '../../config/schema.js';
 import type { CheckResult } from '../doctor.js';
+import { getRuntimePaths } from '../../core/paths.js';
 
 export async function checkConfig(config: TakoConfig): Promise<CheckResult> {
   // Validate required fields
@@ -64,8 +64,31 @@ export async function checkConfig(config: TakoConfig): Promise<CheckResult> {
     };
   }
 
+  if (config.network?.hub) {
+    const rawHub = config.network.hub.trim();
+    const normalized = rawHub.includes('://') ? rawHub : `http://${rawHub}`;
+    try {
+      const url = new URL(normalized);
+      if (!url.hostname || !url.port) {
+        return {
+          name: 'config',
+          status: 'warn',
+          message: `network.hub should include host and port, got "${config.network.hub}"`,
+          repairable: false,
+        };
+      }
+    } catch {
+      return {
+        name: 'config',
+        status: 'warn',
+        message: `network.hub is not a valid hub address: "${config.network.hub}"`,
+        repairable: false,
+      };
+    }
+  }
+
   // Try to parse the raw config file for syntax issues
-  const configPath = join(homedir(), '.tako', 'tako.json');
+  const configPath = getRuntimePaths().configFile;
   try {
     const raw = await readFile(configPath, 'utf-8');
     JSON.parse(raw);
@@ -84,6 +107,10 @@ export async function checkConfig(config: TakoConfig): Promise<CheckResult> {
   const issues: string[] = [];
   if (config.tools.profile === 'minimal' && (config.tools.allow?.length ?? 0) > 0) {
     issues.push('allow list has no effect with "minimal" profile');
+  }
+  const paths = getRuntimePaths();
+  if (config.network?.hub && !existsSync(paths.networkDir)) {
+    issues.push(`network state directory does not exist yet at ${paths.networkDir}`);
   }
 
   if (issues.length > 0) {

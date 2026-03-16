@@ -14,6 +14,9 @@ import {
   Partials,
   REST,
   Routes,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   type Message as DiscordMessage,
   type TextChannel,
   type GuildChannelCreateOptions,
@@ -415,6 +418,9 @@ export class DiscordChannel implements Channel {
   }
 
   private convertInbound(message: DiscordMessage): InboundMessage {
+    const maybeThread = 'isThread' in message.channel && typeof message.channel.isThread === 'function' && message.channel.isThread()
+      ? message.channel
+      : null;
     return {
       id: message.id,
       channelId: `discord:${message.channelId}`,
@@ -425,6 +431,7 @@ export class DiscordChannel implements Channel {
           discriminator: message.author.discriminator,
           guildId: message.guild?.id,
           guildName: message.guild?.name,
+          parentChannelId: maybeThread?.parentId ?? undefined,
         },
       },
       content: message.content,
@@ -439,6 +446,7 @@ export class DiscordChannel implements Channel {
       })),
       timestamp: message.createdAt.toISOString(),
       raw: message,
+      threadId: maybeThread?.id ?? undefined,
     };
   }
 
@@ -570,6 +578,57 @@ export class DiscordChannel implements Channel {
     return lastMessageId;
   }
 
+  async sendPatchApprovalRequest(input: {
+    channelId: string;
+    projectId: string;
+    projectSlug?: string;
+    approvalId: string;
+    artifactName: string;
+    requestedByNodeId?: string;
+    requestedByPrincipalId?: string;
+    sourceBranch?: string;
+    targetBranch?: string;
+    conflictSummary?: string;
+  }): Promise<string> {
+    if (!this.client) throw new Error('[discord] Not connected');
+
+    const channel = await this.client.channels.fetch(input.channelId);
+    if (!channel || !channel.isTextBased()) {
+      throw new Error(`[discord] Cannot send to channel ${input.channelId}`);
+    }
+
+    const sendable = channel as { send: (opts: Record<string, unknown>) => Promise<{ id: string }> };
+    const lines = [
+      `Patch review required for **${input.projectSlug ?? input.projectId}**`,
+      `Artifact: \`${input.artifactName}\``,
+      `Approval: \`${input.approvalId}\``,
+      input.requestedByNodeId ? `From node: \`${input.requestedByNodeId}\`` : null,
+      input.requestedByPrincipalId ? `From principal: \`${input.requestedByPrincipalId}\`` : null,
+      input.sourceBranch ? `Source branch: \`${input.sourceBranch}\`` : null,
+      input.targetBranch ? `Target branch: \`${input.targetBranch}\`` : null,
+      input.conflictSummary ? `Conflict: ${input.conflictSummary}` : null,
+      '',
+      'Use the buttons below or `/patchapprove` and `/patchdeny`.',
+    ].filter(Boolean).join('\n');
+
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`patchapprove:${input.projectId}:${input.approvalId}`)
+        .setLabel('Approve Patch')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`patchdeny:${input.projectId}:${input.approvalId}`)
+        .setLabel('Deny Patch')
+        .setStyle(ButtonStyle.Danger),
+    );
+
+    const msg = await sendable.send({
+      content: lines,
+      components: [row],
+    });
+    return msg.id;
+  }
+
   /** Create a thread in a channel. */
   async createThread(
     channelId: string,
@@ -611,6 +670,11 @@ export class DiscordChannel implements Channel {
 
   async sendTyping(channelId: string): Promise<void> {
     if (!this.client) return;
+
+    // Discord channel IDs are snowflakes — numeric strings of 17-20 digits.
+    // Guard against internal Tako UUIDs or other non-snowflake IDs being passed in
+    // (e.g. from cron sessions that don't have a real Discord channel bound).
+    if (!/^\d{17,20}$/.test(channelId)) return;
 
     try {
       const channel = await this.client.channels.fetch(channelId);

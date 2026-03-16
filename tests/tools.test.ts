@@ -4,14 +4,18 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { ToolRegistry } from '../src/tools/registry.js';
 import { readTool, writeTool, editTool } from '../src/tools/fs.js';
 import { execTool } from '../src/tools/exec.js';
+import { contentSearchTool } from '../src/tools/search.js';
 import type { ToolContext } from '../src/tools/tool.js';
+import { createMemoryTools } from '../src/tools/memory.js';
+import { setRuntimePaths } from '../src/core/paths.js';
+import { bootstrapProjectHome } from '../src/projects/bootstrap.js';
 
 function makeCtx(workDir: string): ToolContext {
   return {
@@ -145,6 +149,27 @@ describe('fs tools', () => {
 
     await rm(tmpDir, { recursive: true, force: true });
   });
+
+  it('blocks reads outside the allowed tool root', async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'tako-fs-'));
+    const projectRoot = join(tmpDir, 'project');
+    const outsideRoot = join(tmpDir, 'outside');
+    await mkdir(projectRoot, { recursive: true });
+    await mkdir(outsideRoot, { recursive: true });
+    await writeFile(join(outsideRoot, 'secret.txt'), 'classified');
+
+    const result = await readTool.execute(
+      { path: '../outside/secret.txt' },
+      {
+        ...makeCtx(projectRoot),
+        allowedToolRoot: projectRoot,
+      },
+    );
+    assert.equal(result.success, false);
+    assert.match(result.error ?? '', /outside allowed root/);
+
+    await rm(tmpDir, { recursive: true, force: true });
+  });
 });
 
 // ─── exec tool ───────────────────────────────────────────────────────
@@ -159,5 +184,115 @@ describe('exec tool', () => {
   it('handles command failure', async () => {
     const result = await execTool.execute({ command: 'exit 1' }, makeCtx('/tmp'));
     assert.equal(result.success, false);
+  });
+
+  it('blocks exec cwd outside the allowed tool root', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'tako-exec-'));
+    const projectRoot = join(base, 'project');
+    const outsideRoot = join(base, 'outside');
+    await mkdir(projectRoot, { recursive: true });
+    await mkdir(outsideRoot, { recursive: true });
+
+    const result = await execTool.execute(
+      { command: 'pwd', cwd: '../outside' },
+      {
+        ...makeCtx(projectRoot),
+        allowedToolRoot: projectRoot,
+      },
+    );
+    assert.equal(result.success, false);
+    assert.match(result.error ?? '', /outside allowed root/);
+
+    await rm(base, { recursive: true, force: true });
+  });
+});
+
+describe('search tools', () => {
+  it('blocks content search outside the allowed tool root', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'tako-search-'));
+    const projectRoot = join(base, 'project');
+    const outsideRoot = join(base, 'outside');
+    await mkdir(projectRoot, { recursive: true });
+    await mkdir(outsideRoot, { recursive: true });
+    await writeFile(join(outsideRoot, 'secret.txt'), 'private');
+
+    const result = await contentSearchTool.execute(
+      { pattern: 'private', path: '../outside' },
+      {
+        ...makeCtx(projectRoot),
+        allowedToolRoot: projectRoot,
+      },
+    );
+    assert.equal(result.success, false);
+    assert.match(result.error ?? '', /outside allowed root/);
+
+    await rm(base, { recursive: true, force: true });
+  });
+});
+
+describe('memory tools', () => {
+  it('scopes project memory visibility to shared plus caller-private', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'tako-memory-scope-'));
+    const workspace = join(home, 'workspace');
+    await mkdir(join(workspace, 'memory'), { recursive: true });
+    await writeFile(join(workspace, 'memory', 'MEMORY.md'), 'global note\n');
+    setRuntimePaths({ home, mode: 'edge' });
+
+    const projectsDir = join(home, 'projects');
+    const project = {
+      projectId: 'project-1',
+      slug: 'alpha',
+      displayName: 'Alpha',
+      ownerPrincipalId: 'principal-1',
+      status: 'active' as const,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    await bootstrapProjectHome(projectsDir, project);
+
+    const tools = createMemoryTools({ workspaceRoot: workspace });
+    const memoryStore = tools.find((tool) => tool.name === 'memory_store');
+    const memorySearch = tools.find((tool) => tool.name === 'memory_search');
+    assert.ok(memoryStore);
+    assert.ok(memorySearch);
+
+    const ctx: ToolContext = {
+      sessionId: 'session-1',
+      workDir: workspace,
+      workspaceRoot: workspace,
+      executionContext: {
+        mode: 'edge',
+        home,
+        nodeId: 'node-1',
+        nodeName: 'edge-main',
+        agentId: 'main',
+        sessionId: 'session-1',
+        principalId: 'principal-1',
+        principalName: 'Shu',
+        projectId: 'project-1',
+        projectSlug: 'alpha',
+      },
+    };
+
+    const otherCtx: ToolContext = {
+      ...ctx,
+      executionContext: {
+        ...ctx.executionContext!,
+        principalId: 'principal-2',
+        principalName: 'Bob',
+      },
+    };
+
+    await memoryStore!.execute({ path: 'MEMORY.md', content: 'private alpha note', mode: 'append' }, ctx);
+    await memoryStore!.execute({ path: 'MEMORY.md', content: 'shared alpha note', mode: 'append', scope: 'project-shared' }, ctx);
+
+    const ownerSearch = await memorySearch!.execute({ query: 'alpha note', limit: 10 }, ctx);
+    assert.ok(ownerSearch.output.includes('project-private:MEMORY.md'));
+    assert.ok(ownerSearch.output.includes('project-shared:MEMORY.md'));
+
+    const otherSearch = await memorySearch!.execute({ query: 'private alpha note', limit: 10 }, otherCtx);
+    assert.ok(!otherSearch.output.includes('project-private:MEMORY.md'));
+
+    await rm(home, { recursive: true, force: true });
   });
 });

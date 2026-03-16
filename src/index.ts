@@ -61,7 +61,6 @@ import { SessionManager, type Session } from './gateway/session.js';
 import { Gateway } from './gateway/gateway.js';
 import { SessionCompactor } from './gateway/compaction.js';
 import { TakoHookSystem } from './hooks/hooks.js';
-import { HybridMemoryStore } from './memory/hybrid.js';
 import { createEmbeddingProvider } from './memory/embeddings.js';
 import { createMemoryTools } from './tools/memory.js';
 import { createSessionTools } from './tools/session.js';
@@ -109,8 +108,13 @@ import { runUpdate } from './cli/update.js';
 import { runService } from './cli/service.js';
 import { runCache } from './cli/cache.js';
 import { runAudit } from './cli/audit.js';
+import { initAudit } from './core/audit.js';
 import { runAcp } from './cli/acp.js';
 import { runExtensions } from './cli/extensions.js';
+import { AcpxRuntime } from './acp/runtime.js';
+import { resolveAcpConfig } from './acp/config.js';
+import { createAcpTool } from './tools/acp.js';
+import { AcpSessionManager, createAcpSessionTools } from './tools/acp-sessions.js';
 import { initSecurity } from './core/security.js';
 import { CacheManager } from './cache/manager.js';
 import { setFsCacheManager } from './tools/fs.js';
@@ -120,8 +124,111 @@ import { runSymphony } from './cli/symphony.js';
 import { ExtensionRegistry } from './skills/extension-registry.js';
 import { loadExtension, getSkillsWithExtension } from './skills/extension-loader.js';
 import type { NetworkAdapter } from './skills/extensions.js';
+import { getRuntimePaths, setRuntimePaths } from './core/paths.js';
+import { parseNodeMode, type NodeMode } from './core/runtime-mode.js';
+import { startHubServer } from './hub/server.js';
+import { loadOrCreateNodeIdentity } from './core/node-identity.js';
+import { runHubCli } from './cli/hub.js';
+import { PrincipalRegistry } from './principals/registry.js';
+import { runPrincipals } from './cli/principals.js';
+import { runProjects } from './cli/projects.js';
+import { runSharedSessions } from './cli/shared-sessions.js';
+import { runNetwork } from './cli/network.js';
+import { ProjectRegistry } from './projects/registry.js';
+import { ProjectMembershipRegistry } from './projects/memberships.js';
+import { ProjectBindingRegistry } from './projects/bindings.js';
+import { getProjectRole, isProjectMember } from './projects/access.js';
+import type { ProjectRole, Project } from './projects/types.js';
+import {
+  defaultProjectArtifactsRoot,
+  projectApprovalsRoot,
+  projectBackgroundRoot,
+  projectBranchesRoot,
+  resolveProjectRoot,
+} from './projects/root.js';
+import { ProjectArtifactRegistry } from './projects/artifacts.js';
+import { importArtifactEnvelope } from './projects/distribution.js';
+import { ProjectApprovalRegistry } from './projects/approvals.js';
+import { ProjectBackgroundRegistry } from './projects/background.js';
+import { ProjectBranchRegistry } from './projects/branches.js';
+import { getWorktreeRepoStatus } from './projects/patches.js';
+import { ProjectWorktreeRegistry } from './projects/worktrees.js';
+import { SharedSessionRegistry, type SharedSession } from './sessions/shared.js';
+import {
+  createHubClientFromConfig,
+  registerNodeWithHub,
+  syncAllProjectsToHub,
+} from './network/sync.js';
+import { TrustStore } from './network/trust.js';
+import { NetworkSharedSessionStore, type NetworkSessionEvent } from './network/shared-sessions.js';
+import { pollNetworkSessionEvents, sendNetworkSessionEvent } from './network/session-sync.js';
+import { CapabilityRegistry } from './network/capabilities.js';
+import { DelegationStore } from './network/delegation.js';
+import { evaluateDelegationRequest } from './network/delegation-policy.js';
+import { DelegationExecutor } from './network/delegation-executor.js';
+import {
+  buildExecutionContext,
+  toAuditContext,
+  toCommandContext,
+  toSessionMetadata,
+  type ExecutionContext,
+} from './core/execution-context.js';
 
 const VERSION = '0.0.1';
+
+function parseGlobalOptions(argv: string[]): {
+  args: string[];
+  home?: string;
+  mode?: NodeMode;
+  hub?: string;
+  port?: number;
+  bind?: string;
+} {
+  const args: string[] = [];
+  let home: string | undefined;
+  let mode: NodeMode | undefined;
+  let hub: string | undefined;
+  let port: number | undefined;
+  let bind: string | undefined;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--home') {
+      home = argv[i + 1];
+      i++;
+      continue;
+    }
+    if (arg === '--mode') {
+      mode = parseNodeMode(argv[i + 1]);
+      i++;
+      continue;
+    }
+    if (arg === '--hub') {
+      hub = argv[i + 1];
+      args.push(arg, argv[i + 1] ?? '');
+      i++;
+      continue;
+    }
+    if (arg === '--port') {
+      const raw = argv[i + 1];
+      const parsedPort = raw ? Number.parseInt(raw, 10) : Number.NaN;
+      if (!Number.isFinite(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+        throw new Error(`Invalid --port value: ${raw ?? '(missing)'}`);
+      }
+      port = parsedPort;
+      i++;
+      continue;
+    }
+    if (arg === '--bind') {
+      bind = argv[i + 1];
+      i++;
+      continue;
+    }
+    args.push(arg);
+  }
+
+  return { args, home, mode, hub, port, bind };
+}
 
 async function main(): Promise<void> {
   // Prevent crashes from killing the entire process
@@ -136,11 +243,32 @@ async function main(): Promise<void> {
     // Don't exit — log and continue
   });
 
-  const args = process.argv.slice(2);
+  const parsed = parseGlobalOptions(process.argv.slice(2));
+  const args = parsed.args;
   const command = args[0] ?? 'start';
+  const implicitMode = command === 'hub' ? 'hub' : 'edge';
+  const mode = parsed.mode ?? implicitMode;
+  const paths = setRuntimePaths({ home: parsed.home, mode });
+  if (parsed.hub) {
+    process.env['TAKO_HUB'] = parsed.hub;
+  }
+  if (parsed.bind) {
+    process.env['TAKO_GATEWAY_BIND'] = parsed.bind;
+  }
+  if (parsed.port != null) {
+    process.env['TAKO_GATEWAY_PORT'] = String(parsed.port);
+  }
 
   switch (command) {
     case 'start':
+      if (mode === 'hub') {
+        await startHubServer({
+          home: paths.home,
+          bind: parsed.bind ?? process.env['TAKO_GATEWAY_BIND'] ?? '127.0.0.1',
+          port: parsed.port ?? (process.env['TAKO_GATEWAY_PORT'] ? Number.parseInt(process.env['TAKO_GATEWAY_PORT'], 10) : undefined),
+        });
+        break;
+      }
       // If no config exists, prompt to run onboard first
       if (!hasConfig()) {
         console.log('No tako.json found. Run `tako onboard` to set up Tako first.\n');
@@ -156,6 +284,17 @@ async function main(): Promise<void> {
       } else {
         await runStart();
       }
+      break;
+    case 'hub':
+      if ((args[1] ?? 'start') !== 'start') {
+        await runHubCli(args.slice(1));
+        break;
+      }
+      await startHubServer({
+        home: paths.home,
+        bind: parsed.bind ?? process.env['TAKO_GATEWAY_BIND'] ?? '127.0.0.1',
+        port: parsed.port ?? (process.env['TAKO_GATEWAY_PORT'] ? Number.parseInt(process.env['TAKO_GATEWAY_PORT'], 10) : undefined),
+      });
       break;
     case 'stop':
       await runStop();
@@ -200,6 +339,18 @@ async function main(): Promise<void> {
     case 'sessions':
       await runSessions(args.slice(1));
       break;
+    case 'principals':
+      await runPrincipals(args.slice(1));
+      break;
+    case 'projects':
+      await runProjects(args.slice(1));
+      break;
+    case 'shared-sessions':
+      await runSharedSessions(args.slice(1));
+      break;
+    case 'network':
+      await runNetwork(args.slice(1));
+      break;
     case 'extensions':
       await runExtensions(args.slice(1));
       break;
@@ -207,7 +358,7 @@ async function main(): Promise<void> {
       await runSymphony(args.slice(1));
       break;
     case 'status':
-      await runStatus();
+      await runStatus(args.slice(1));
       break;
     case 'nuke':
       await runNuke(args.slice(1));
@@ -330,6 +481,14 @@ Commands:
   acp exec <a> <p>   One-shot ACP run (pi/claude/codex/opencode/gemini/kimi)
   acp send <a> <p>   Persistent ACP session send
 
+  network trust list               List trusted or pending remote nodes
+  network trust revoke <nodeId>    Revoke trust for a remote node
+  network invite list              List project invites
+  network invite create ...        Create a project invite for a remote edge
+  network invite import <file>     Import an invite onto this edge
+  network invite accept <id>       Accept an imported invite
+  network invite reject <id>       Reject an imported invite
+
   skills list        List discovered skills
   skills install <n> Install a skill
   skills info <name> Show skill details
@@ -377,7 +536,7 @@ Auth examples:
 
 Config resolution:
   1. --config <path> (explicit override)
-  2. ~/.tako/tako.json (user home)
+  2. <home>/tako.json (selected installation home)
 
 Examples:
   tako onboard                      First-time setup
@@ -393,8 +552,18 @@ Examples:
 async function runStart(): Promise<void> {
   // Install file logger early so all console output is captured
   installFileLogger();
+  const runtimeMode = parseNodeMode(process.env['TAKO_MODE']);
+  const runtimePaths = getRuntimePaths();
+  console.log(`[tako] mode=${runtimeMode} home=${runtimePaths.home}${process.env['TAKO_HUB'] ? ` hub=${process.env['TAKO_HUB']}` : ''}`);
 
   const config = await resolveConfig();
+  if (process.env['TAKO_HUB']) {
+    config.network = { ...config.network, enabled: true, hub: process.env['TAKO_HUB'] };
+  }
+  const audit = initAudit(config.audit);
+  const hubClient = createHubClientFromConfig(config);
+  let stopHubHeartbeat: (() => void) | null = null;
+  let stopNetworkPolling: (() => void) | null = null;
 
   // Bootstrap workspace
   await bootstrapWorkspace(config.memory.workspace);
@@ -412,19 +581,314 @@ async function runStart(): Promise<void> {
   // Initialize subsystems
   const hooks = new TakoHookSystem();
   const sessions = new SessionManager();
+  const principalRegistry = new PrincipalRegistry(runtimePaths.principalsDir);
+  const projectRegistry = new ProjectRegistry(runtimePaths.projectsDir);
+  const projectMemberships = new ProjectMembershipRegistry(runtimePaths.projectsDir);
+  const projectBindings = new ProjectBindingRegistry(runtimePaths.projectsDir);
+  const sharedSessionRegistry = new SharedSessionRegistry(runtimePaths.sharedSessionsDir);
+  const trustStore = new TrustStore(runtimePaths.trustFile);
+  const networkSharedSessions = new NetworkSharedSessionStore(runtimePaths.networkSessionsFile, runtimePaths.networkEventsFile);
+  const capabilityRegistry = new CapabilityRegistry(runtimePaths.capabilitiesFile);
+  const delegationStore = new DelegationStore(runtimePaths.delegationRequestsFile, runtimePaths.delegationResultsFile);
+  const delegationExecutor = new DelegationExecutor();
+  let nodeIdentity: Awaited<ReturnType<typeof loadOrCreateNodeIdentity>> | null = null;
+  await principalRegistry.load();
+  await projectRegistry.load();
+  await projectMemberships.load();
+  await projectBindings.load();
+  await sharedSessionRegistry.load();
+  await trustStore.load();
+  await networkSharedSessions.load();
+  await capabilityRegistry.load();
+  await delegationStore.load();
+
+  const resolvePrincipal = async (msg: InboundMessage) => {
+    const platform = (msg.channelId.split(':')[0] ?? 'cli') as 'discord' | 'telegram' | 'cli';
+    const username = typeof msg.author.meta?.username === 'string' ? msg.author.meta.username : undefined;
+    const principal = await principalRegistry.getOrCreateHuman({
+      displayName: msg.author.name,
+      platform,
+      platformUserId: msg.author.id,
+      username,
+      metadata: {
+        channelId: msg.channelId,
+      },
+    });
+    msg.author.principalId = principal.principalId;
+    msg.author.meta = {
+      ...msg.author.meta,
+      principalId: principal.principalId,
+      principalName: principal.displayName,
+    };
+    return principal;
+  };
+
+  const resolveProject = (input: {
+    platform: 'discord' | 'telegram' | 'cli';
+    channelTarget: string;
+    threadId?: string;
+    agentId?: string;
+  }) => {
+    const binding = projectBindings.resolve(input);
+    if (!binding) return null;
+    const project = projectRegistry.get(binding.projectId);
+    if (!project) return null;
+    return { binding, project };
+  };
+
+  const notifyBoundDiscordChannels = async (projectId: string, content: string): Promise<void> => {
+    const discordBindings = projectBindings.list().filter((binding) => binding.projectId === projectId && binding.platform === 'discord');
+    if (discordBindings.length === 0) return;
+    for (const binding of discordBindings) {
+      const discordTarget = binding.threadId ?? binding.channelTarget;
+      const discordInstance = discordChannels.find((channel) => channel.agentId === binding.agentId)
+        ?? discordChannel
+        ?? discordChannels[0];
+      if (!discordInstance) continue;
+      await discordInstance.send({
+        target: discordTarget,
+        content,
+      }).catch(() => {});
+    }
+  };
+
+  const notifyPatchApprovalReview = async (input: {
+    projectId: string;
+    approvalId: string;
+    artifactName: string;
+    requestedByNodeId?: string;
+    requestedByPrincipalId?: string;
+    sourceBranch?: string;
+    targetBranch?: string;
+    conflictSummary?: string;
+  }): Promise<void> => {
+    const project = projectRegistry.get(input.projectId);
+    const discordBindings = projectBindings.list().filter((binding) => binding.projectId === input.projectId && binding.platform === 'discord');
+    if (discordBindings.length === 0) return;
+    for (const binding of discordBindings) {
+      const discordTarget = binding.threadId ?? binding.channelTarget;
+      const discordInstance = discordChannels.find((channel) => channel.agentId === binding.agentId)
+        ?? discordChannel
+        ?? discordChannels[0];
+      if (!discordInstance) continue;
+      await discordInstance.sendPatchApprovalRequest({
+        channelId: discordTarget,
+        projectId: input.projectId,
+        projectSlug: project?.slug,
+        approvalId: input.approvalId,
+        artifactName: input.artifactName,
+        requestedByNodeId: input.requestedByNodeId,
+        requestedByPrincipalId: input.requestedByPrincipalId,
+        sourceBranch: input.sourceBranch,
+        targetBranch: input.targetBranch,
+        conflictSummary: input.conflictSummary,
+      }).catch(() => {});
+    }
+  };
+
+  const getNodeIdentity = () => {
+    if (!nodeIdentity) throw new Error('Node identity not initialized');
+    return nodeIdentity;
+  };
+
+  const buildProjectBackground = async (
+    projectId: string,
+    reason: string,
+    shared?: SharedSession | null,
+  ) => {
+    const project = projectRegistry.get(projectId);
+    if (!project) return null;
+    const artifactRegistry = new ProjectArtifactRegistry(defaultProjectArtifactsRoot(runtimePaths, projectId), projectId);
+    const worktreeRegistry = new ProjectWorktreeRegistry(join(getRuntimePaths().projectsDir, projectId, 'worktrees'), projectId);
+    const branchRegistry = new ProjectBranchRegistry(projectBranchesRoot(runtimePaths, projectId), projectId);
+    const backgroundRegistry = new ProjectBackgroundRegistry(projectBackgroundRoot(runtimePaths, projectId));
+    await Promise.all([artifactRegistry.load(), worktreeRegistry.load(), branchRegistry.load(), backgroundRegistry.load()]);
+    const branches = branchRegistry.list();
+    const worktrees = await Promise.all(worktreeRegistry.list().map(async (worktree) => {
+      const repo = await getWorktreeRepoStatus(worktree.root);
+      const branch = branches.find((row) => row.nodeId === worktree.nodeId && row.status === 'active');
+      return {
+        ...worktree,
+        branch: branch?.branchName ?? repo.branch,
+        dirty: repo.dirty,
+      };
+    }));
+    const networkSession = networkSharedSessions.findByProject(projectId).find((candidate) => candidate.participantNodeIds.includes(getNodeIdentity().nodeId)) ?? null;
+    const snapshot = await backgroundRegistry.buildAndSave({
+      project,
+      reason,
+      sharedSession: shared ?? null,
+      networkSession,
+      artifacts: artifactRegistry.list(),
+      worktrees,
+    });
+    for (const session of sessions.list()) {
+      if (session.metadata?.projectId === projectId) {
+        session.metadata.projectBackgroundSummary = snapshot.summary;
+      }
+    }
+    return snapshot;
+  };
+
+  const buildInboundExecutionContext = (input: {
+    agentId: string;
+    sessionId?: string;
+    principal?: Awaited<ReturnType<typeof principalRegistry.getOrCreateHuman>> | null;
+    authorId: string;
+    authorName: string;
+    platform: 'discord' | 'telegram' | 'cli';
+    channelId: string;
+    channelTarget: string;
+    threadId?: string;
+    project?: Project | null;
+    projectRole?: ProjectRole | null;
+    metadata?: Record<string, unknown>;
+  }): ExecutionContext => {
+    const projectRoot = input.project ? resolveProjectRoot(runtimePaths, input.project) : undefined;
+    return buildExecutionContext({
+      nodeIdentity: getNodeIdentity(),
+      home: runtimePaths.home,
+      agentId: input.agentId,
+      workspaceRoot: config.memory.workspace,
+      projectRoot,
+      allowedToolRoot: projectRoot ?? config.memory.workspace,
+      sessionId: input.sessionId,
+      principal: input.principal,
+      authorId: input.authorId,
+      authorName: input.authorName,
+      platform: input.platform,
+      platformUserId: input.authorId,
+      channelId: input.channelId,
+      channelTarget: input.channelTarget,
+      threadId: input.threadId,
+      project: input.project ?? null,
+      projectRole: input.projectRole ?? null,
+      metadata: input.metadata,
+    });
+  };
+
+  const applyExecutionContextToSession = (session: Session, ctx: ExecutionContext, channel?: Channel): void => {
+    const networkSession = (ctx.sharedSessionId ? networkSharedSessions.findBySharedSessionId(ctx.sharedSessionId) : null)
+      ?? networkSharedSessions.findByLocalSessionId(session.id)
+      ?? (ctx.projectId
+        ? networkSharedSessions.findByProject(ctx.projectId).find((candidate) => candidate.participantNodeIds.includes(getNodeIdentity().nodeId)) ?? null
+        : null);
+    if (networkSession) {
+      void networkSharedSessions.bindLocalSession({
+        networkSessionId: networkSession.networkSessionId,
+        nodeId: getNodeIdentity().nodeId,
+        localSessionId: session.id,
+        sharedSessionId: ctx.sharedSessionId,
+      }).catch(() => {});
+      ctx.networkSessionId = networkSession.networkSessionId;
+      ctx.hostNodeId = networkSession.hostNodeId;
+      ctx.participantNodeIds = networkSession.participantNodeIds;
+    }
+    Object.assign(session.metadata, toSessionMetadata(ctx), {
+      executionContext: ctx,
+      ...(channel ? { channelRef: channel } : {}),
+    });
+  };
+
+  const ensureSharedSession = async (input: {
+    session: Session;
+    ctx: ExecutionContext;
+  }): Promise<SharedSession | null> => {
+    if (!input.ctx.projectId || !input.ctx.principalId || !input.ctx.channelTarget || !input.ctx.platform) {
+      return null;
+    }
+
+    let shared = sharedSessionRegistry.findBySessionId(input.session.id);
+    if (!shared) {
+      shared = sharedSessionRegistry.findByBinding({
+        projectId: input.ctx.projectId,
+        platform: input.ctx.platform,
+        channelTarget: input.ctx.channelTarget,
+        threadId: input.ctx.threadId,
+        agentId: input.ctx.agentId,
+      });
+    }
+    let participantJoined = false;
+    if (!shared) {
+      shared = await sharedSessionRegistry.create({
+        sessionId: input.session.id,
+        agentId: input.ctx.agentId,
+        projectId: input.ctx.projectId,
+        projectSlug: input.ctx.projectSlug,
+        ownerPrincipalId: input.ctx.principalId,
+        initialParticipantId: input.ctx.principalId,
+        binding: {
+          platform: input.ctx.platform,
+          channelId: input.ctx.channelId ?? `${input.ctx.platform}:${input.ctx.channelTarget}`,
+          channelTarget: input.ctx.channelTarget,
+          threadId: input.ctx.threadId,
+        },
+      });
+      audit.log({
+        ...toAuditContext({
+          ...input.ctx,
+          sharedSessionId: shared.sharedSessionId,
+          participantIds: shared.participantIds,
+        }),
+        event: 'session_start',
+        action: 'shared_session_create',
+        details: {
+          ownerPrincipalId: shared.ownerPrincipalId,
+        },
+        success: true,
+      }).catch(() => {});
+      participantJoined = true;
+    } else {
+      participantJoined = !shared.participantIds.includes(input.ctx.principalId);
+      await sharedSessionRegistry.touchParticipant(shared.sharedSessionId, input.ctx.principalId);
+    }
+    shared = await sharedSessionRegistry.setActiveParticipant(shared.sharedSessionId, input.ctx.principalId);
+    if (participantJoined) {
+      const snapshot = await buildProjectBackground(shared.projectId, `participant_join:${input.ctx.principalId}`, shared);
+      const project = projectRegistry.get(shared.projectId);
+      if (project?.collaboration?.announceJoins !== false) {
+        const who = input.ctx.principalName ?? input.ctx.authorName ?? input.ctx.principalId;
+        const lines = [`[join] ${who} joined ${project?.slug ?? shared.projectId}`];
+        if (snapshot?.summary) lines.push('', snapshot.summary);
+        await notifyBoundDiscordChannels(shared.projectId, lines.join('\n'));
+      }
+      const networkSession = networkSharedSessions.findByProject(shared.projectId)
+        .find((candidate) => candidate.participantNodeIds.includes(getNodeIdentity().nodeId)) ?? null;
+      if (hubClient && nodeIdentity && networkSession?.participantNodeIds.length) {
+        await sendNetworkSessionEvent(hubClient, networkSharedSessions, trustStore, {
+          eventId: crypto.randomUUID(),
+          networkSessionId: networkSession.networkSessionId,
+          projectId: shared.projectId,
+          fromNodeId: nodeIdentity.nodeId,
+          fromPrincipalId: input.ctx.principalId,
+          type: 'join',
+          audience: 'specific-nodes',
+          targetNodeIds: networkSession.participantNodeIds,
+          payload: {
+            summary: `${input.ctx.principalName ?? input.ctx.authorName ?? input.ctx.principalId} joined ${project?.slug ?? shared.projectId}`,
+            metadata: {
+              joinKind: 'principal_join',
+              participantPrincipalId: input.ctx.principalId,
+              participantPrincipalName: input.ctx.principalName ?? input.ctx.authorName,
+              projectSlug: project?.slug,
+            },
+          },
+          createdAt: new Date().toISOString(),
+        }).catch(() => {});
+      }
+    }
+    return shared;
+  };
 
   // Thread bindings (Discord thread → sub-agent session routing)
   const { homedir } = await import('node:os');
   const threadBindings = new ThreadBindingManager(
-    join(homedir(), '.tako', 'thread-bindings.json'),
+    getRuntimePaths().threadBindingsFile,
   );
   await threadBindings.load();
 
   // Memory
   const embeddingProvider = createEmbeddingProvider(config.memory.embeddings);
-  const memoryStore = new HybridMemoryStore(config.memory.workspace, embeddingProvider ?? undefined);
-  await memoryStore.initialize();
-
   const promptBuilder = new PromptBuilder(config.memory.workspace);
   promptBuilder.setSandboxInfo(config.sandbox.mode, config.sandbox.workspaceAccess);
   const contextManager = new ContextManager({
@@ -559,9 +1023,39 @@ async function runStart(): Promise<void> {
   }));
   toolRegistry.registerAll(imageTools);
   toolRegistry.registerAll(gitTools);
-  toolRegistry.registerAll(createMemoryTools(memoryStore));
+  toolRegistry.registerAll(createMemoryTools({
+    workspaceRoot: config.memory.workspace,
+    embeddingProvider: embeddingProvider ?? undefined,
+  }));
   toolRegistry.registerAll(createSessionTools(sessions));
   toolRegistry.registerAll(createAllowFromTools());
+
+  // ACP runtime (acpx-backed coding agent sessions)
+  const acpConfig = resolveAcpConfig(
+    {
+      enabled: config.tools.acp?.enabled ?? true,
+      permissionMode: config.tools.acp?.permissionMode ?? 'approve-reads',
+      defaultAgent: config.tools.acp?.defaultAgent ?? 'claude',
+      timeoutSeconds: config.tools.acp?.timeoutSeconds ?? 600,
+    },
+    config.memory.workspace,
+  );
+  const acpRuntime = new AcpxRuntime(acpConfig);
+  await acpRuntime.probeAvailability();
+  const acpAvailable = acpRuntime.isHealthy();
+  console.log(`[acp] Runtime: ${acpAvailable ? 'available' : 'unavailable'}`);
+
+  // Inject ACP knowledge into ALL agent prompts
+  promptBuilder.setAcpConfig({
+    enabled: acpAvailable && acpConfig.enabled,
+    allowedAgents: acpConfig.allowedAgents,
+    defaultAgent: acpConfig.defaultAgent,
+  });
+
+  // Old standalone ACP tools removed — sessions_spawn(runtime="acp") replaces them.
+  // AcpSessionManager kept for CLI `tako acp` commands only.
+  const acpSessionManager = new AcpSessionManager(acpConfig, acpRuntime);
+  acpSessionManager.startCleanup();
 
   // Symphony tools (project orchestration)
   const { symphonyTools } = await import('./tools/symphony.js');
@@ -692,6 +1186,11 @@ async function runStart(): Promise<void> {
     if (agent.isMain) continue;
     const agentPromptBuilder = new PromptBuilder(agent.workspace);
     agentPromptBuilder.setSandboxInfo(config.sandbox.mode, config.sandbox.workspaceAccess);
+    agentPromptBuilder.setAcpConfig({
+      enabled: acpAvailable && acpConfig.enabled,
+      allowedAgents: acpConfig.allowedAgents,
+      defaultAgent: acpConfig.defaultAgent,
+    });
     const agentModel = agent.model ?? config.providers.primary;
 
     // Build per-agent skill loader when agent has extra skill dirs
@@ -816,6 +1315,8 @@ async function runStart(): Promise<void> {
     orchestrator: subAgentOrchestrator,
     sessions,
     threadBindings,
+    acpRuntime,
+    acpConfig,
   }));
 
   // ─── Command registry ────────────────────────────────────────────
@@ -869,6 +1370,7 @@ async function runStart(): Promise<void> {
           agentId: ctx.agentId,
           channelType,
           channelTarget,
+          executionContext: ctx.executionContext,
         },
       );
 
@@ -876,6 +1378,31 @@ async function runStart(): Promise<void> {
         return result.error ? `ACP error: ${result.error}` : 'ACP command failed.';
       }
       return result.output || 'ACP command executed.';
+    },
+    getProjectBackground: async (projectId) => {
+      const registry = new ProjectBackgroundRegistry(projectBackgroundRoot(runtimePaths, projectId));
+      await registry.load();
+      return registry.get()?.summary ?? null;
+    },
+    listPatchApprovals: async (projectId) => {
+      const registry = new ProjectApprovalRegistry(projectApprovalsRoot(runtimePaths, projectId), projectId);
+      await registry.load();
+      return registry.list().map((row) => ({
+        approvalId: row.approvalId,
+        artifactName: row.artifactName,
+        status: row.status,
+      }));
+    },
+    resolvePatchApproval: async (projectId, approvalId, decision, reviewedByPrincipalId, reason) => {
+      const registry = new ProjectApprovalRegistry(projectApprovalsRoot(runtimePaths, projectId), projectId);
+      await registry.load();
+      const resolved = await registry.resolve(approvalId, decision, reviewedByPrincipalId, reason);
+      await notifyBoundDiscordChannels(projectId, `[patch ${decision}] ${resolved.artifactName} (${resolved.approvalId})`);
+      return {
+        approvalId: resolved.approvalId,
+        artifactName: resolved.artifactName,
+        status: resolved.status,
+      };
     },
   });
 
@@ -902,7 +1429,11 @@ async function runStart(): Promise<void> {
 
   // ─── Multi-channel routing ────────────────────────────────────────
 
-  function getSession(msg: InboundMessage, channel?: Channel) {
+  async function getSession(
+    msg: InboundMessage,
+    channel?: Channel,
+    resolvedProject?: { project: Project } | null,
+  ): Promise<ReturnType<typeof sessions.getOrCreate> | null> {
     // If the channel has a bound agentId, use it directly; otherwise resolve from bindings
     const channelType = msg.channelId.split(':')[0] ?? 'cli';
     const channelTarget = msg.channelId.includes(':')
@@ -914,18 +1445,75 @@ async function runStart(): Promise<void> {
     const binding = threadBindings.getBinding(channelTarget);
     if (binding) {
       threadBindings.touch(channelTarget);
+
+      // ACP session routing: if bound to an ACP session, route through acpx runtime
+      if (binding.sessionKey.includes(':acp:') && acpRuntime?.isHealthy()) {
+        const { handleAcpThreadMessage } = await import('./tools/agent-tools.js');
+        const discordCh = channel as DiscordChannel;
+        const handled = await handleAcpThreadMessage(
+          binding.sessionKey,
+          msg.content,
+          channelTarget,
+          discordCh,
+          acpRuntime,
+        );
+        if (handled) return null; // Handled by ACP, skip normal routing
+      }
+
       const session = sessions.getOrCreate(binding.sessionKey, {
         name: `${binding.agentId}/thread:${channelTarget}`,
         metadata: {
-          agentId: binding.agentId,
-          channelType,
-          channelTarget,
-          authorId: msg.author.id,
+          ...toSessionMetadata(buildInboundExecutionContext({
+            agentId: binding.agentId,
+            sessionId: undefined,
+            principal: principalRegistry.get(msg.author.principalId ?? '') ?? null,
+            authorId: msg.author.id,
+            authorName: msg.author.name,
+            platform: channelType as 'discord' | 'telegram' | 'cli',
+            channelId: msg.channelId,
+            channelTarget,
+            project: resolvedProject?.project ?? null,
+            threadId: msg.threadId,
+          })),
           threadBinding: true,
         },
       });
-      // Attach runtime-only ref (not persisted)
-      session.metadata.channelRef = channel;
+      let ctx = buildInboundExecutionContext({
+        agentId: binding.agentId,
+        sessionId: session.id,
+        principal: principalRegistry.get(msg.author.principalId ?? '') ?? null,
+        authorId: msg.author.id,
+        authorName: msg.author.name,
+        platform: channelType as 'discord' | 'telegram' | 'cli',
+        channelId: msg.channelId,
+        channelTarget,
+        project: resolvedProject?.project ?? null,
+        threadId: msg.threadId,
+      });
+      const shared = await ensureSharedSession({ session, ctx });
+      if (shared) {
+        ctx = {
+          ...ctx,
+          sharedSessionId: shared.sharedSessionId,
+          ownerPrincipalId: shared.ownerPrincipalId,
+          participantIds: shared.participantIds,
+          activeParticipantIds: shared.activeParticipantIds,
+        };
+      }
+      applyExecutionContextToSession(session, ctx, channel);
+      if (session.isNew) {
+        await hooks.emit('session_start', {
+          event: 'session_start',
+          sessionId: session.id,
+        data: {
+          ...toAuditContext(ctx),
+          channelType,
+          channelTarget,
+          authorId: msg.author.id,
+        },
+        timestamp: Date.now(),
+      });
+      }
       return session;
     }
 
@@ -964,12 +1552,55 @@ async function runStart(): Promise<void> {
     const session = sessions.getOrCreate(key, {
       name: `${agentId}/${msg.channelId}/${msg.author.name}`,
       metadata: {
-        agentId, channelType, channelTarget, authorId: msg.author.id,
-        ...(msg.threadId ? { threadId: msg.threadId } : {}),
+        ...toSessionMetadata(buildInboundExecutionContext({
+          agentId,
+          principal: principalRegistry.get(msg.author.principalId ?? '') ?? null,
+          authorId: msg.author.id,
+          authorName: msg.author.name,
+          platform: channelType as 'discord' | 'telegram' | 'cli',
+          channelId: msg.channelId,
+          channelTarget,
+          threadId: msg.threadId,
+          project: resolvedProject?.project ?? null,
+        })),
       },
     });
-    // Attach runtime-only ref (not persisted — stripped in appendToJSONL)
-    session.metadata.channelRef = channel;
+    let ctx = buildInboundExecutionContext({
+      agentId,
+      sessionId: session.id,
+      principal: principalRegistry.get(msg.author.principalId ?? '') ?? null,
+      authorId: msg.author.id,
+      authorName: msg.author.name,
+      platform: channelType as 'discord' | 'telegram' | 'cli',
+      channelId: msg.channelId,
+      channelTarget,
+      threadId: msg.threadId,
+      project: resolvedProject?.project ?? null,
+    });
+    const shared = await ensureSharedSession({ session, ctx });
+    if (shared) {
+      ctx = {
+        ...ctx,
+        sharedSessionId: shared.sharedSessionId,
+        ownerPrincipalId: shared.ownerPrincipalId,
+        participantIds: shared.participantIds,
+        activeParticipantIds: shared.activeParticipantIds,
+      };
+    }
+    applyExecutionContextToSession(session, ctx, channel);
+    if (session.isNew) {
+      await hooks.emit('session_start', {
+        event: 'session_start',
+        sessionId: session.id,
+        data: {
+          ...toAuditContext(ctx),
+          channelType,
+          channelTarget,
+          authorId: msg.author.id,
+        },
+        timestamp: Date.now(),
+      });
+    }
     return session;
   }
 
@@ -977,10 +1608,44 @@ async function runStart(): Promise<void> {
     deliveryQueue.registerChannel(channel);
     channel.onMessage(async (msg: InboundMessage) => {
       try {
+      const principal = await resolvePrincipal(msg);
+      const channelType = msg.channelId.split(':')[0] ?? channel.id ?? 'cli';
+      const channelTarget = msg.channelId.includes(':')
+        ? msg.channelId.split(':').slice(1).join(':')
+        : msg.channelId;
+      const projectChannelTarget = (msg.author.meta?.parentChannelId as string | undefined) ?? channelTarget;
+      const guildId = msg.author.meta?.guildId as string | undefined;
+      const inboundAgentId = channel.agentId ?? resolveAgentForChannel(agentRegistry.list(), channelType, channelTarget, guildId);
+      const resolvedProject = resolveProject({
+        platform: channelType as 'discord' | 'telegram' | 'cli',
+        channelTarget: projectChannelTarget,
+        threadId: msg.threadId,
+        agentId: inboundAgentId,
+      });
+      const projectRole = resolvedProject
+        ? getProjectRole(projectMemberships, resolvedProject.project.projectId, principal.principalId) ?? undefined
+        : undefined;
+      const inboundContext = buildInboundExecutionContext({
+        agentId: inboundAgentId,
+        principal,
+        authorId: msg.author.id,
+        authorName: msg.author.name,
+        platform: channelType as 'discord' | 'telegram' | 'cli',
+        channelId: msg.channelId,
+        channelTarget,
+        threadId: msg.threadId,
+        project: resolvedProject?.project ?? null,
+        projectRole: projectRole ?? null,
+      });
       const inboundText = typeof msg.content === 'string' ? msg.content : '';
       await hooks.emit('message_received', {
         event: 'message_received',
-        data: { channelId: msg.channelId, authorId: msg.author.id, content: msg.content },
+        data: {
+          ...toAuditContext(inboundContext),
+          channelId: msg.channelId,
+          authorId: msg.author.id,
+          content: msg.content,
+        },
         timestamp: Date.now(),
       });
 
@@ -997,21 +1662,35 @@ async function runStart(): Promise<void> {
         // even when the bot is unclaimed (open mode) or when the user isn't on the allowlist yet.
         const isClaimCommand = inboundText.trim().toLowerCase() === '/claim';
         if (!isClaimCommand) {
-          const allowed = await isUserAllowed(aclChannel, aclAgentId, msg.author.id);
+          const allowed = await isUserAllowed(aclChannel, aclAgentId, msg.author.id, principal.principalId);
           if (!allowed) return; // silently ignore
         }
       }
 
-      const session = getSession(msg, channel);
+      if (resolvedProject && !isProjectMember(projectMemberships, resolvedProject.project.projectId, principal.principalId)) {
+        audit.log({
+          ...toAuditContext(inboundContext),
+          event: 'permission_denied',
+          action: 'project_membership',
+          details: { channelId: msg.channelId, authorId: msg.author.id },
+          success: false,
+        }).catch(() => {});
+        return;
+      }
+
+      const session = await getSession(msg, channel, resolvedProject);
+
+      // ACP thread routing: if getSession returned null, the message was handled by ACP runtime
+      if (!session) return;
 
       // Update per-message runtime metadata used by typing/reactions/rate-limits
-      session.metadata.channelId = msg.channelId;
-      session.metadata.channelRef = channel;
-      session.metadata.channelTarget = msg.channelId.includes(':')
-        ? msg.channelId.split(':').slice(1).join(':')
-        : msg.channelId;
-      session.metadata.authorId = msg.author.id;
-      session.metadata.authorName = msg.author.name;
+      const sessionContext = (
+        session.metadata.executionContext as ExecutionContext | undefined
+      ) ?? {
+        ...inboundContext,
+        sessionId: session.id,
+      };
+      applyExecutionContextToSession(session, sessionContext, channel);
       session.metadata.messageId = msg.id;
 
       // Extract platform-specific target for typing/reactions
@@ -1034,11 +1713,8 @@ async function runStart(): Promise<void> {
 
         try {
           const cmdResult = await commandRegistry.handle(inboundText, {
-            channelId: msg.channelId,
-            authorId: msg.author.id,
-            authorName: msg.author.name,
+            ...toCommandContext(sessionContext),
             session,
-            agentId,
           });
 
           if (cmdResult) {
@@ -1072,6 +1748,8 @@ async function runStart(): Promise<void> {
           content: inboundText,
           channelId: msg.channelId,
           authorId: msg.author.id,
+          principalId: principal.principalId,
+          principalName: principal.displayName,
           timestamp: Date.now(),
           messageId: msg.id,
           attachments: queuedAttachments,
@@ -1173,7 +1851,22 @@ async function runStart(): Promise<void> {
       } else if (response.trim()) {
         hooks.emit('message_sending', {
           event: 'message_sending',
-          data: { channelId: msg.channelId, content: response },
+          data: {
+            channelId: msg.channelId,
+            sessionId: session.id,
+            agentId: session.metadata.agentId,
+            content: response,
+            principalId: session.metadata.principalId,
+            principalName: session.metadata.principalName,
+            projectId: session.metadata.projectId,
+            projectSlug: session.metadata.projectSlug,
+            sharedSessionId: session.metadata.sharedSessionId,
+            networkSessionId: session.metadata.networkSessionId,
+            hostNodeId: session.metadata.hostNodeId,
+            participantNodeIds: session.metadata.participantNodeIds,
+            participantIds: session.metadata.participantIds,
+            target,
+          },
           timestamp: Date.now(),
         }).catch(() => {});
 
@@ -1358,7 +2051,7 @@ async function runStart(): Promise<void> {
   let telegramChannel: TelegramChannel | undefined;
 
   // Track which channels have received an intro (persistent across restarts)
-  const introFilePath = join(homedir(), '.tako', 'introduced-channels.json');
+  const introFilePath = getRuntimePaths().introducedChannelsFile;
   const introducedChannels = new Set<string>();
   try {
     const raw = readFileSync(introFilePath, 'utf-8');
@@ -1474,6 +2167,167 @@ async function runStart(): Promise<void> {
     process.env['TAKO_KEEP_ALIVE'] = '1';
   }
 
+  hooks.on('message_received', (event: any) => {
+    audit.log({
+      agentId: String(event.data.agentId ?? 'main'),
+      sessionId: String(event.sessionId ?? 'unknown'),
+      principalId: event.data.principalId as string | undefined,
+      principalName: event.data.principalName as string | undefined,
+      projectId: event.data.projectId as string | undefined,
+      projectSlug: event.data.projectSlug as string | undefined,
+      event: 'message_received',
+      action: 'receive',
+      details: {
+        channelId: event.data.channelId,
+        authorId: event.data.authorId,
+      },
+      success: true,
+    }).catch(() => {});
+  });
+
+  hooks.on('session_start', (event: any) => {
+    audit.log({
+      agentId: String(event.data.agentId ?? 'main'),
+      sessionId: String(event.sessionId ?? 'unknown'),
+      principalId: event.data.principalId as string | undefined,
+      principalName: event.data.principalName as string | undefined,
+      projectId: event.data.projectId as string | undefined,
+      projectSlug: event.data.projectSlug as string | undefined,
+      event: 'session_start',
+      action: 'create',
+      details: {
+        channelType: event.data.channelType,
+        channelTarget: event.data.channelTarget,
+        authorId: event.data.authorId,
+      },
+      success: true,
+    }).catch(() => {});
+  });
+
+  hooks.on('message_sending', (event: any) => {
+    audit.log({
+      agentId: String(event.data.agentId ?? 'main'),
+      sessionId: String(event.data.sessionId ?? 'unknown'),
+      principalId: event.data.principalId as string | undefined,
+      principalName: event.data.principalName as string | undefined,
+      projectId: event.data.projectId as string | undefined,
+      projectSlug: event.data.projectSlug as string | undefined,
+      sharedSessionId: event.data.sharedSessionId as string | undefined,
+      participantIds: event.data.participantIds as string[] | undefined,
+      event: 'message_sent',
+      action: 'send',
+      details: {
+        channelId: event.data.channelId,
+        target: event.data.target,
+      },
+      success: true,
+    }).catch(() => {});
+
+    const networkSessionId = event.data.networkSessionId as string | undefined;
+    const participantNodeIds = event.data.participantNodeIds as string[] | undefined;
+    if (hubClient && identity && networkSessionId && participantNodeIds?.length) {
+      const outboundEvent: NetworkSessionEvent = {
+        eventId: crypto.randomUUID(),
+        networkSessionId,
+        projectId: String(event.data.projectId ?? ''),
+        fromNodeId: identity.nodeId,
+        fromPrincipalId: String(event.data.principalId ?? 'system'),
+        type: 'message',
+        audience: 'session-participants',
+        targetNodeIds: participantNodeIds,
+        payload: {
+          text: typeof event.data.content === 'string' ? event.data.content : undefined,
+          metadata: {
+            channelId: event.data.channelId,
+            projectSlug: event.data.projectSlug,
+            sharedSessionId: event.data.sharedSessionId,
+          },
+        },
+        createdAt: new Date().toISOString(),
+      };
+      void sendNetworkSessionEvent(hubClient, networkSharedSessions, trustStore, outboundEvent).catch((err) => {
+        audit.log({
+          agentId: String(event.data.agentId ?? 'main'),
+          sessionId: String(event.data.sessionId ?? 'unknown'),
+          principalId: event.data.principalId as string | undefined,
+          principalName: event.data.principalName as string | undefined,
+          projectId: event.data.projectId as string | undefined,
+          projectSlug: event.data.projectSlug as string | undefined,
+          sharedSessionId: event.data.sharedSessionId as string | undefined,
+          participantIds: event.data.participantIds as string[] | undefined,
+          event: 'permission_denied',
+          action: 'network_session_send',
+          details: {
+            networkSessionId,
+            participantNodeIds,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          success: false,
+        }).catch(() => {});
+      });
+    }
+  });
+
+  hooks.on('after_tool_call', (event: any) => {
+    const result = event.data.result ?? {};
+    const params = event.data.params && typeof event.data.params === 'object'
+      ? event.data.params as Record<string, unknown>
+      : {};
+    audit.log({
+      agentId: String(event.data.agentId ?? 'main'),
+      sessionId: String(event.sessionId ?? 'unknown'),
+      principalId: event.data.principalId as string | undefined,
+      principalName: event.data.principalName as string | undefined,
+      projectId: event.data.projectId as string | undefined,
+      projectSlug: event.data.projectSlug as string | undefined,
+      sharedSessionId: event.data.sharedSessionId as string | undefined,
+      participantIds: event.data.participantIds as string[] | undefined,
+      event: 'tool_call',
+      action: String(event.data.toolName ?? 'unknown'),
+      details: params,
+      success: Boolean(result.success),
+    }).catch(() => {});
+    if (event.data.denied) {
+      audit.log({
+        agentId: String(event.data.agentId ?? 'main'),
+        sessionId: String(event.sessionId ?? 'unknown'),
+        principalId: event.data.principalId as string | undefined,
+        principalName: event.data.principalName as string | undefined,
+        projectId: event.data.projectId as string | undefined,
+        projectSlug: event.data.projectSlug as string | undefined,
+        sharedSessionId: event.data.sharedSessionId as string | undefined,
+        participantIds: event.data.participantIds as string[] | undefined,
+        event: 'permission_denied',
+        action: String(event.data.toolName ?? 'unknown'),
+        details: {
+          denialType: event.data.denialType,
+          allowedToolRoot: event.data.allowedToolRoot,
+          attemptedPath: event.data.attemptedPath,
+          params,
+          error: result.error,
+        },
+        success: false,
+      }).catch(() => {});
+    }
+  });
+
+  hooks.on('agent_end', (event: any) => {
+    audit.log({
+      agentId: String(event.data.agentId ?? 'main'),
+      sessionId: String(event.sessionId ?? 'unknown'),
+      principalId: event.data.principalId as string | undefined,
+      principalName: event.data.principalName as string | undefined,
+      projectId: event.data.projectId as string | undefined,
+      projectSlug: event.data.projectSlug as string | undefined,
+      sharedSessionId: event.data.sharedSessionId as string | undefined,
+      participantIds: event.data.participantIds as string[] | undefined,
+      event: 'agent_run',
+      action: 'run',
+      details: { model: event.data.model ?? 'unknown', turns: event.data.turns ?? 0 },
+      success: true,
+    }).catch(() => {});
+  });
+
   const isSkillSlashCommand = (name: string): boolean => skillCommandSpecs.some((s) => s.name === name);
 
   const handleSlashCommand = async (
@@ -1483,19 +2337,68 @@ async function runStart(): Promise<void> {
     agentId: string,
     boundChannel: Channel,
   ): Promise<string | null> => {
+      const principal = await principalRegistry.getOrCreateHuman({
+      displayName: author.name,
+      platform: 'discord',
+      platformUserId: author.id,
+      metadata: { channelId: `discord:${channelId}` },
+    });
+    const projectChannelTarget = channelId;
+    const resolvedProject = resolveProject({
+      platform: 'discord',
+      channelTarget: projectChannelTarget,
+      agentId,
+    });
+    const projectRole = resolvedProject
+      ? getProjectRole(projectMemberships, resolvedProject.project.projectId, principal.principalId) ?? undefined
+      : undefined;
     const channelKey = `discord:${channelId}`;
     const sessionKey = `agent:${agentId}:${channelKey}`;
     const session = sessions.getOrCreate(sessionKey, {
       name: `${agentId}/${channelKey}/${author.name}`,
-      metadata: { agentId, channelType: 'discord', channelTarget: channelId, authorId: author.id },
+      metadata: toSessionMetadata(buildInboundExecutionContext({
+        agentId,
+        principal,
+        authorId: author.id,
+        authorName: author.name,
+        platform: 'discord',
+        channelId: channelKey,
+        channelTarget: channelId,
+        project: resolvedProject?.project ?? null,
+        projectRole: projectRole ?? null,
+      })),
     });
-
-    const cmdResult = await commandRegistry.handle('/' + commandName, {
-      channelId: channelKey,
+    let executionContext = buildInboundExecutionContext({
+      agentId,
+      sessionId: session.id,
+      principal,
       authorId: author.id,
       authorName: author.name,
+      platform: 'discord',
+      channelId: channelKey,
+      channelTarget: channelId,
+      project: resolvedProject?.project ?? null,
+      projectRole: projectRole ?? null,
+    });
+    const shared = await ensureSharedSession({ session, ctx: executionContext });
+    if (shared) {
+      executionContext = {
+        ...executionContext,
+        sharedSessionId: shared.sharedSessionId,
+        ownerPrincipalId: shared.ownerPrincipalId,
+        participantIds: shared.participantIds,
+        activeParticipantIds: shared.activeParticipantIds,
+      };
+    }
+    applyExecutionContextToSession(session, executionContext, boundChannel);
+
+    if (resolvedProject && !isProjectMember(projectMemberships, resolvedProject.project.projectId, principal.principalId)) {
+      return 'You are not a member of this project.';
+    }
+
+    const cmdResult = await commandRegistry.handle('/' + commandName, {
+      ...toCommandContext(executionContext),
       session,
-      agentId,
     });
     if (cmdResult !== null) return cmdResult;
 
@@ -1601,6 +2504,39 @@ async function runStart(): Promise<void> {
         await handleChannelTypeButton(interaction);
         return true;
       }
+      if (interaction.customId.startsWith('patchapprove:') || interaction.customId.startsWith('patchdeny:')) {
+        const [action, projectId, approvalId] = interaction.customId.split(':');
+        if (!projectId || !approvalId) {
+          await interaction.reply({ content: 'Malformed patch approval action.', flags: 64 }).catch(() => {});
+          return true;
+        }
+        const principal = await principalRegistry.getOrCreateHuman({
+          displayName: interaction.user.displayName || interaction.user.username,
+          platform: 'discord',
+          platformUserId: interaction.user.id,
+        });
+        const approvals = new ProjectApprovalRegistry(projectApprovalsRoot(runtimePaths, projectId), projectId);
+        await approvals.load();
+        const existing = approvals.get(approvalId);
+        if (!existing) {
+          await interaction.reply({ content: `Approval not found: ${approvalId}`, flags: 64 }).catch(() => {});
+          return true;
+        }
+        const resolved = await approvals.resolve(
+          approvalId,
+          action === 'patchapprove' ? 'approved' : 'denied',
+          principal.principalId,
+          `Resolved in Discord by ${principal.displayName}`,
+        );
+        await interaction.update({
+          content: `${interaction.message.content}\n\nResolved: **${resolved.status}** by ${principal.displayName}`,
+          components: [],
+        }).catch(async () => {
+          await interaction.reply({ content: `Resolved ${resolved.artifactName}: ${resolved.status}`, flags: 64 }).catch(() => {});
+        });
+        await notifyBoundDiscordChannels(projectId, `[patch ${resolved.status}] ${resolved.artifactName} (${resolved.approvalId}) by ${principal.displayName}`);
+        return true;
+      }
       return false;
     });
 
@@ -1625,20 +2561,69 @@ async function runStart(): Promise<void> {
 
     // Register native Telegram command handlers
     telegramChannel.setCommands(nativeCommandList, async (commandName, chatId, author) => {
+      const principal = await principalRegistry.getOrCreateHuman({
+        displayName: author.name,
+        platform: 'telegram',
+        platformUserId: author.id,
+        username: typeof author.meta?.username === 'string' ? author.meta.username : undefined,
+        metadata: { channelId: `telegram:${chatId}` },
+      });
       const channelKey = `telegram:${chatId}`;
       const agentId = resolveAgentForChannel(agentRegistry.list(), 'telegram', chatId);
+      const resolvedProject = resolveProject({
+        platform: 'telegram',
+        channelTarget: chatId,
+        agentId,
+      });
+      const projectRole = resolvedProject
+        ? getProjectRole(projectMemberships, resolvedProject.project.projectId, principal.principalId) ?? undefined
+        : undefined;
       const sessionKey = `agent:${agentId}:${channelKey}`;
       const session = sessions.getOrCreate(sessionKey, {
         name: `${agentId}/${channelKey}/${author.name}`,
-        metadata: { agentId, channelType: 'telegram', channelTarget: chatId, authorId: author.id },
+        metadata: toSessionMetadata(buildInboundExecutionContext({
+          agentId,
+          principal,
+          authorId: author.id,
+          authorName: author.name,
+          platform: 'telegram',
+          channelId: channelKey,
+          channelTarget: chatId,
+          project: resolvedProject?.project ?? null,
+          projectRole: projectRole ?? null,
+        })),
       });
-
-      return commandRegistry.handle('/' + commandName, {
-        channelId: channelKey,
+      let executionContext = buildInboundExecutionContext({
+        agentId,
+        sessionId: session.id,
+        principal,
         authorId: author.id,
         authorName: author.name,
+        platform: 'telegram',
+        channelId: channelKey,
+        channelTarget: chatId,
+        project: resolvedProject?.project ?? null,
+        projectRole: projectRole ?? null,
+      });
+      const shared = await ensureSharedSession({ session, ctx: executionContext });
+      if (shared) {
+        executionContext = {
+          ...executionContext,
+          sharedSessionId: shared.sharedSessionId,
+          ownerPrincipalId: shared.ownerPrincipalId,
+          participantIds: shared.participantIds,
+          activeParticipantIds: shared.activeParticipantIds,
+        };
+      }
+      applyExecutionContextToSession(session, executionContext, telegramChannel ?? undefined);
+
+      if (resolvedProject && !isProjectMember(projectMemberships, resolvedProject.project.projectId, principal.principalId)) {
+        return 'You are not a member of this project.';
+      }
+
+      return commandRegistry.handle('/' + commandName, {
+        ...toCommandContext(executionContext),
         session,
-        agentId,
       });
     });
 
@@ -1692,19 +2677,68 @@ async function runStart(): Promise<void> {
 
       // Register commands for this agent's Telegram bot
       agentTelegram.setCommands(nativeCommandList, async (commandName, chatId, author) => {
+        const principal = await principalRegistry.getOrCreateHuman({
+          displayName: author.name,
+          platform: 'telegram',
+          platformUserId: author.id,
+          username: typeof author.meta?.username === 'string' ? author.meta.username : undefined,
+          metadata: { channelId: `telegram:${chatId}` },
+        });
         const channelKey = `telegram:${chatId}`;
+        const resolvedProject = resolveProject({
+          platform: 'telegram',
+          channelTarget: chatId,
+          agentId: agent.id,
+        });
+        const projectRole = resolvedProject
+          ? getProjectRole(projectMemberships, resolvedProject.project.projectId, principal.principalId) ?? undefined
+          : undefined;
         const sessionKey = `agent:${agent.id}:${channelKey}`;
         const session = sessions.getOrCreate(sessionKey, {
           name: `${agent.id}/${channelKey}/${author.name}`,
-          metadata: { agentId: agent.id, channelType: 'telegram', channelTarget: chatId, authorId: author.id },
+          metadata: toSessionMetadata(buildInboundExecutionContext({
+            agentId: agent.id,
+            principal,
+            authorId: author.id,
+            authorName: author.name,
+            platform: 'telegram',
+            channelId: channelKey,
+            channelTarget: chatId,
+            project: resolvedProject?.project ?? null,
+            projectRole: projectRole ?? null,
+          })),
         });
-
-        return commandRegistry.handle('/' + commandName, {
-          channelId: channelKey,
+        let executionContext = buildInboundExecutionContext({
+          agentId: agent.id,
+          sessionId: session.id,
+          principal,
           authorId: author.id,
           authorName: author.name,
+          platform: 'telegram',
+          channelId: channelKey,
+          channelTarget: chatId,
+          project: resolvedProject?.project ?? null,
+          projectRole: projectRole ?? null,
+        });
+        const shared = await ensureSharedSession({ session, ctx: executionContext });
+        if (shared) {
+          executionContext = {
+            ...executionContext,
+            sharedSessionId: shared.sharedSessionId,
+            ownerPrincipalId: shared.ownerPrincipalId,
+            participantIds: shared.participantIds,
+            activeParticipantIds: shared.activeParticipantIds,
+          };
+        }
+        applyExecutionContextToSession(session, executionContext, agentTelegram);
+
+        if (resolvedProject && !isProjectMember(projectMemberships, resolvedProject.project.projectId, principal.principalId)) {
+          return 'You are not a member of this project.';
+        }
+
+        return commandRegistry.handle('/' + commandName, {
+          ...toCommandContext(executionContext),
           session,
-          agentId: agent.id,
         });
       });
 
@@ -1812,6 +2846,34 @@ async function runStart(): Promise<void> {
   if (process.env['TAKO_GATEWAY_PORT']) {
     config.gateway.port = parseInt(process.env['TAKO_GATEWAY_PORT'], 10);
   }
+  nodeIdentity = await loadOrCreateNodeIdentity({
+    mode: 'edge',
+    home: runtimePaths.home,
+    bind: config.gateway.bind,
+    port: config.gateway.port,
+    hub: config.network?.hub,
+  });
+  const identity = nodeIdentity;
+  await principalRegistry.seedReservedPrincipal({
+    type: 'local-agent',
+    displayName: identity.name,
+    metadata: { nodeId: identity.nodeId, mode: 'edge' },
+  });
+  await principalRegistry.seedReservedPrincipal({
+    type: 'system',
+    displayName: 'system',
+    metadata: { nodeId: identity.nodeId, mode: 'edge' },
+  });
+  console.log(`[tako] node=${identity.nodeId} bind=${config.gateway.bind} port=${config.gateway.port}${config.network?.hub ? ` hub=${config.network.hub}` : ''}`);
+
+  if (hubClient) {
+    try {
+      await registerNodeWithHub(hubClient, identity, capabilityRegistry);
+      await syncAllProjectsToHub(hubClient, identity, projectRegistry, projectMemberships);
+    } catch (err) {
+      console.warn(`[network] Failed to sync edge to hub ${config.network?.hub}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   const gateway = new Gateway(config.gateway, {
     sessions,
@@ -1824,6 +2886,226 @@ async function runStart(): Promise<void> {
     provider: failoverProvider,
   });
   await gateway.start();
+
+  if (hubClient) {
+    const heartbeatSeconds = Math.max(5, config.network?.heartbeatSeconds ?? 30);
+    const timer = setInterval(() => {
+      void hubClient.heartbeat(identity.nodeId).catch((err) => {
+        console.warn(`[network] Hub heartbeat failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }, heartbeatSeconds * 1000);
+    stopHubHeartbeat = () => clearInterval(timer);
+
+    const pollTimer = setInterval(() => {
+      void pollNetworkSessionEvents(hubClient, networkSharedSessions, identity.nodeId, {
+        sessions,
+        onEvent: async (event) => {
+          if (event.type === 'delegation_request' && event.payload.delegationRequest) {
+            const request = event.payload.delegationRequest;
+            await delegationStore.saveIncomingRequest(request);
+            const trust = trustStore.getByNodeId(request.fromNodeId);
+            const capability = capabilityRegistry.get(request.capabilityId);
+            const project = projectRegistry.get(request.projectId);
+            const verdict = evaluateDelegationRequest({
+              trust,
+              capability,
+              projectId: request.projectId,
+              remoteProjectRole: null,
+            });
+            const ctx = buildExecutionContext({
+              nodeIdentity: identity,
+              home: runtimePaths.home,
+              agentId: 'main',
+              workspaceRoot: config.memory.workspace,
+              projectRoot: project ? resolveProjectRoot(runtimePaths, project) : undefined,
+              allowedToolRoot: project ? resolveProjectRoot(runtimePaths, project) : config.memory.workspace,
+              project,
+              metadata: {
+                delegationRequestId: request.requestId,
+              },
+            });
+            const result = verdict.allowed
+              ? await delegationExecutor.execute(request, ctx)
+              : {
+                  requestId: request.requestId,
+                  projectId: request.projectId,
+                  fromNodeId: request.fromNodeId,
+                  toNodeId: request.toNodeId,
+                  status: 'denied' as const,
+                  summary: `Delegation denied: ${verdict.reason}`,
+                  error: verdict.reason,
+                  createdAt: new Date().toISOString(),
+                };
+            await delegationStore.saveResult(result);
+            audit.log({
+              agentId: 'main',
+              sessionId: event.networkSessionId,
+              projectId: request.projectId,
+              event: verdict.allowed ? 'agent_comms' : 'permission_denied',
+              action: verdict.allowed ? 'delegation_execute' : 'delegation_deny',
+              details: {
+                requestId: request.requestId,
+                capabilityId: request.capabilityId,
+                fromNodeId: request.fromNodeId,
+                reason: verdict.reason,
+              },
+              success: verdict.allowed,
+            }).catch(() => {});
+            const responseEvent: NetworkSessionEvent = {
+              eventId: crypto.randomUUID(),
+              networkSessionId: event.networkSessionId,
+              projectId: request.projectId,
+              fromNodeId: identity.nodeId,
+              fromPrincipalId: 'system',
+              type: 'delegation_result',
+              audience: 'specific-nodes',
+              targetNodeIds: [request.fromNodeId],
+              payload: {
+                delegationResult: result,
+                summary: result.summary,
+                metadata: {
+                  requestId: request.requestId,
+                  capabilityId: request.capabilityId,
+                },
+              },
+              createdAt: new Date().toISOString(),
+            };
+            await sendNetworkSessionEvent(hubClient, networkSharedSessions, trustStore, responseEvent);
+            return;
+          }
+
+          if (event.type === 'delegation_result' && event.payload.delegationResult) {
+            const result = event.payload.delegationResult;
+            await delegationStore.saveResult(result);
+            const networkSession = networkSharedSessions.get(event.networkSessionId);
+            const localBinding = networkSession?.localSessionBindings.find((binding) => binding.nodeId === identity.nodeId);
+            if (localBinding && sessions.get(localBinding.localSessionId)) {
+              sessions.addMessage(localBinding.localSessionId, {
+                role: 'assistant',
+                name: `delegation:${event.fromNodeId}`,
+                content: `[delegation ${result.status}] ${result.summary}`,
+              });
+            }
+            audit.log({
+              agentId: 'main',
+              sessionId: event.networkSessionId,
+              projectId: result.projectId,
+              event: 'agent_comms',
+              action: 'delegation_result_received',
+              details: {
+                requestId: result.requestId,
+                fromNodeId: event.fromNodeId,
+                status: result.status,
+              },
+              success: result.status === 'ok',
+            }).catch(() => {});
+            await notifyBoundDiscordChannels(result.projectId, `[#${event.fromNodeId}] delegation ${result.status}: ${result.summary}`);
+            return;
+          }
+
+          if (event.type === 'join' && event.projectId) {
+            const existing = networkSharedSessions.get(event.networkSessionId);
+            if (existing) {
+              await networkSharedSessions.upsertSession({
+                ...existing,
+                participantNodeIds: Array.from(new Set([...(existing.participantNodeIds ?? []), event.fromNodeId])),
+                participantPrincipalIds: Array.from(new Set([
+                  ...(existing.participantPrincipalIds ?? []),
+                  ...(typeof event.payload.metadata?.participantPrincipalId === 'string'
+                    ? [event.payload.metadata.participantPrincipalId]
+                    : []),
+                ])),
+              });
+            }
+            const snapshot = await buildProjectBackground(
+              event.projectId,
+              `network_join:${String(event.payload.metadata?.joinKind ?? 'join')}:${event.fromNodeId}`,
+            );
+            const who = typeof event.payload.metadata?.participantPrincipalName === 'string'
+              ? event.payload.metadata.participantPrincipalName
+              : typeof event.payload.metadata?.nodeName === 'string'
+                ? event.payload.metadata.nodeName
+                : event.fromNodeId;
+            const lines = [`[network join] ${who} joined ${event.payload.metadata?.projectSlug ?? event.projectId}`];
+            if (snapshot?.summary) lines.push('', snapshot.summary);
+            await notifyBoundDiscordChannels(event.projectId, lines.join('\n'));
+            return;
+          }
+
+          if (event.type === 'artifact_publish' && event.payload.artifactEnvelope) {
+            const project = projectRegistry.get(event.projectId);
+            if (!project) {
+              return;
+            }
+            const artifacts = new ProjectArtifactRegistry(defaultProjectArtifactsRoot(runtimePaths, project.projectId), project.projectId);
+            await artifacts.load();
+            const artifact = await importArtifactEnvelope(artifacts, event.payload.artifactEnvelope);
+            if (artifact.kind === 'patch' && project.collaboration?.patchRequiresApproval) {
+              const approvals = new ProjectApprovalRegistry(projectApprovalsRoot(runtimePaths, project.projectId), project.projectId);
+              await approvals.load();
+              const existingApproval = approvals.findPendingByArtifact(artifact.artifactId);
+              const sourceBranch = typeof artifact.metadata?.repo === 'object' && artifact.metadata?.repo && typeof (artifact.metadata.repo as Record<string, unknown>).branch === 'string'
+                ? String((artifact.metadata.repo as Record<string, unknown>).branch)
+                : undefined;
+              if (!existingApproval) {
+                const createdApproval = await approvals.create({
+                  artifactId: artifact.artifactId,
+                  artifactName: artifact.name,
+                  requestedByNodeId: event.fromNodeId,
+                  requestedByPrincipalId: event.fromPrincipalId,
+                  sourceBranch,
+                });
+                await notifyPatchApprovalReview({
+                  projectId: project.projectId,
+                  approvalId: createdApproval.approvalId,
+                  artifactName: createdApproval.artifactName,
+                  requestedByNodeId: createdApproval.requestedByNodeId,
+                  requestedByPrincipalId: createdApproval.requestedByPrincipalId,
+                  sourceBranch: createdApproval.sourceBranch,
+                });
+              }
+            }
+            await buildProjectBackground(project.projectId, `artifact_sync:${artifact.artifactId}`);
+            audit.log({
+              agentId: 'main',
+              sessionId: event.networkSessionId,
+              projectId: project.projectId,
+              projectSlug: project.slug,
+              event: 'agent_comms',
+              action: 'artifact_sync_receive',
+              details: {
+                artifactId: artifact.artifactId,
+                artifactName: artifact.name,
+                artifactKind: artifact.kind,
+                fromNodeId: event.fromNodeId,
+              },
+              success: true,
+            }).catch(() => {});
+            const pendingApproval = artifact.kind === 'patch' && project.collaboration?.patchRequiresApproval
+              ? await (async () => {
+                  const approvals = new ProjectApprovalRegistry(projectApprovalsRoot(runtimePaths, project.projectId), project.projectId);
+                  await approvals.load();
+                  return approvals.findPendingByArtifact(artifact.artifactId);
+                })()
+              : null;
+            const patchHint = artifact.kind === 'patch' && pendingApproval
+              ? `\nReview in Discord: /patches or /patchapprove ${pendingApproval.approvalId}`
+              : '';
+            await notifyBoundDiscordChannels(project.projectId, `[#${event.fromNodeId}] synced ${artifact.kind} artifact: ${artifact.name}${patchHint}`);
+            return;
+          }
+
+          if (event.type === 'message' && event.payload.text && event.projectId) {
+            await buildProjectBackground(event.projectId, `network_message:${event.fromNodeId}`);
+            await notifyBoundDiscordChannels(event.projectId, `[#${event.fromNodeId}] ${event.payload.text}`);
+          }
+        },
+      }).catch((err) => {
+        console.warn(`[network] Session poll failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }, heartbeatSeconds * 1000);
+    stopNetworkPolling = () => clearInterval(pollTimer);
+  }
 
   // Set status info for TUI clients
   gateway.setStatusInfo({
@@ -1839,6 +3121,9 @@ async function runStart(): Promise<void> {
     startedAt: new Date().toISOString(),
     port: config.gateway.port,
     bind: config.gateway.bind,
+    mode: 'edge',
+    home: runtimePaths.home,
+    nodeId: identity.nodeId,
     configPath: config._configPath,
   });
 
@@ -2031,6 +3316,10 @@ async function runStart(): Promise<void> {
 
     clearInterval(idleSweepTimer);
     if (rotationTimeout) clearTimeout(rotationTimeout);
+    stopHubHeartbeat?.();
+    stopHubHeartbeat = null;
+    stopNetworkPolling?.();
+    stopNetworkPolling = null;
     messageQueue.clear();
     await threadBindings.save();
     cronScheduler.stop();
@@ -2040,6 +3329,7 @@ async function runStart(): Promise<void> {
       await ch.disconnect().catch(() => {});
     }
     await gateway.stop();
+    await acpSessionManager.shutdown();
     await sandboxManager.shutdown();
     await sessions.shutdown();
     await removePidFile();
@@ -2106,8 +3396,7 @@ async function runStart(): Promise<void> {
   // Deliver restart note if one exists (from a prior system_restart call)
   try {
     const { readFileSync, unlinkSync } = await import('node:fs');
-    const { homedir } = await import('node:os');
-    const restartNotePath = join(homedir(), '.tako', 'restart-note.json');
+    const restartNotePath = getRuntimePaths().restartNoteFile;
     const raw = readFileSync(restartNotePath, 'utf-8');
     const restartNote = JSON.parse(raw) as { note: string; sessionKey?: string; channelId?: string; agentId?: string; timestamp: string };
     unlinkSync(restartNotePath);
@@ -3010,7 +4299,7 @@ async function runAgents(args: string[]): Promise<void> {
       }
 
       // Persist to agent.json
-      const agentJsonPath = join(homedir(), '.tako', 'agents', agentId, 'agent.json');
+      const agentJsonPath = join(getRuntimePaths().agentsDir, agentId, 'agent.json');
       if (existsSync(agentJsonPath)) {
         const raw = await readFile(agentJsonPath, 'utf-8');
         const entry = JSON.parse(raw);
@@ -3045,7 +4334,7 @@ async function runAgents(args: string[]): Promise<void> {
         bindings.telegram.users = (bindings.telegram.users ?? []).filter((u) => u !== target);
       }
 
-      const agentJsonPath = join(homedir(), '.tako', 'agents', agentId, 'agent.json');
+      const agentJsonPath = join(getRuntimePaths().agentsDir, agentId, 'agent.json');
       if (existsSync(agentJsonPath)) {
         const raw = await readFile(agentJsonPath, 'utf-8');
         const entry = JSON.parse(raw);
@@ -3111,7 +4400,7 @@ async function runAgents(args: string[]): Promise<void> {
         process.exit(1);
       }
 
-      const agentJsonPath = join(homedir(), '.tako', 'agents', agentId, 'agent.json');
+      const agentJsonPath = join(getRuntimePaths().agentsDir, agentId, 'agent.json');
       let entry: Record<string, unknown> = {};
       if (existsSync(agentJsonPath)) {
         const raw = await readFile(agentJsonPath, 'utf-8');

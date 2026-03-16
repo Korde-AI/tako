@@ -109,6 +109,19 @@ describe('AuditLogger', () => {
     assert.equal((entries[0].details as any).model, 'claude-sonnet-4-6');
     assert.equal((entries[0].details as any).tokensUsed, 5000);
   });
+
+  it('records principal identity on audit events', async () => {
+    await logger.logMessageSent('main', 's1', 'discord:chan', 'chan', true, {
+      principalId: 'prn-1',
+      principalName: 'shu',
+    });
+    await logger.flush();
+
+    const entries = await logger.query({ event: 'message_sent' });
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].principalId, 'prn-1');
+    assert.equal(entries[0].principalName, 'shu');
+  });
 });
 
 // ─── 2. Cron run persistence tests ──────────────────────────────────
@@ -271,24 +284,22 @@ describe('Browser tools', () => {
 // ─── 5. ACP tool config test ────────────────────────────────────────
 
 import { createAcpTool } from '../src/tools/acp.js';
+import { resolveAcpConfig } from '../src/acp/config.js';
+import { AcpxRuntime } from '../src/acp/runtime.js';
 
 describe('ACP tool', () => {
   it('creates acp_spawn tool', () => {
-    const tools = createAcpTool({
-      enabled: true,
-      backend: 'claude',
-      defaultTimeout: 600,
-    });
+    const config = resolveAcpConfig({ enabled: true });
+    const runtime = new AcpxRuntime(config);
+    const tools = createAcpTool(config, runtime);
     assert.equal(tools.length, 1);
     assert.equal(tools[0].name, 'acp_spawn');
   });
 
   it('returns error when disabled', async () => {
-    const tools = createAcpTool({
-      enabled: false,
-      backend: 'claude',
-      defaultTimeout: 600,
-    });
+    const config = resolveAcpConfig({ enabled: false });
+    const runtime = new AcpxRuntime(config);
+    const tools = createAcpTool(config, runtime);
     const ctx = { sessionId: 's1', workDir: '/tmp', workspaceRoot: '/tmp' };
     const result = await tools[0].execute({ task: 'test' }, ctx);
     assert.equal(result.success, false);

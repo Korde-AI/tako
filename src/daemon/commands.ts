@@ -12,6 +12,14 @@ import {
   isProcessRunning,
   getPidPath,
 } from './pid.js';
+import { getRuntimeHome, getRuntimeMode } from '../core/paths.js';
+import { readNodeIdentity } from '../core/node-identity.js';
+import { ProjectRegistry } from '../projects/registry.js';
+import { SharedSessionRegistry } from '../sessions/shared.js';
+import { TrustStore } from '../network/trust.js';
+import { InviteStore } from '../network/invites.js';
+import { NetworkSharedSessionStore } from '../network/shared-sessions.js';
+import { getRuntimePaths } from '../core/paths.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -68,24 +76,33 @@ export async function runStartDaemon(): Promise<void> {
   console.log('Starting Tako in background...');
 
   const rt = getRuntimeArgs();
+  const bind = process.env['TAKO_GATEWAY_BIND'] ?? '127.0.0.1';
+  const port = process.env['TAKO_GATEWAY_PORT']
+    ? Number.parseInt(process.env['TAKO_GATEWAY_PORT'], 10)
+    : 18790;
   const child = nodeSpawn(rt.cmd, [...rt.args, 'start', '--background'], {
+    // Thread the current home/mode into the child daemon.
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env },
+    env: { ...process.env, TAKO_HOME: getRuntimeHome(), TAKO_MODE: getRuntimeMode() },
   });
 
   child.unref();
 
   if (child.pid) {
+    const identity = await readNodeIdentity();
     await writePidFile({
       pid: child.pid,
       startedAt: new Date().toISOString(),
-      port: 18790,
-      bind: '127.0.0.1',
+      port,
+      bind,
+      mode: getRuntimeMode(),
+      home: getRuntimeHome(),
+      nodeId: identity?.nodeId,
     });
 
     console.log(`Tako started (PID: ${child.pid})`);
-    console.log(`   Gateway: ws://127.0.0.1:18790`);
+    console.log(`   Gateway: ws://${bind}:${port}`);
     console.log(`   PID file: ${getPidPath()}`);
     console.log('');
     console.log('Commands:');
@@ -151,10 +168,58 @@ export async function runRestart(): Promise<void> {
 }
 
 /** Show daemon status + runtime config info. */
-export async function runStatus(): Promise<void> {
+export async function runStatus(args: string[] = []): Promise<void> {
   const daemonStatus = await getDaemonStatus();
+  const json = args.includes('--json');
+  const paths = getRuntimePaths();
+  const identity = await readNodeIdentity();
+  const projects = new ProjectRegistry(paths.projectsDir);
+  const sharedSessions = new SharedSessionRegistry(paths.sharedSessionsDir);
+  const trusts = new TrustStore(paths.trustFile);
+  const invites = new InviteStore(paths.invitesFile);
+  const networkSessions = new NetworkSharedSessionStore(paths.networkSessionsFile, paths.networkEventsFile);
+  await Promise.all([projects.load(), sharedSessions.load(), trusts.load(), invites.load(), networkSessions.load()]);
+  await invites.expirePending();
+
+  const summary = {
+    version: VERSION,
+    mode: getRuntimeMode(),
+    home: getRuntimeHome(),
+    daemon: daemonStatus.running && daemonStatus.info ? {
+      running: true,
+      pid: daemonStatus.info.pid,
+      bind: daemonStatus.info.bind,
+      port: daemonStatus.info.port,
+      startedAt: daemonStatus.info.startedAt,
+      nodeId: daemonStatus.info.nodeId ?? identity?.nodeId ?? null,
+    } : {
+      running: false,
+      stale: daemonStatus.stale,
+    },
+    paths: {
+      pidFile: getPidPath(),
+      configFile: paths.configFile,
+      workspaceDir: paths.workspaceDir,
+    },
+    node: identity ?? null,
+    collaboration: {
+      projectCount: projects.list().length,
+      sharedSessionCount: sharedSessions.list().length,
+      networkSessionCount: networkSessions.list().length,
+      trustCount: trusts.list().length,
+      trustedCount: trusts.list().filter((record) => record.status === 'trusted').length,
+      pendingInviteCount: invites.listPending().length,
+    },
+  };
+
+  if (json) {
+    console.log(JSON.stringify(summary, null, 2));
+    return;
+  }
 
   console.log(`Tako v${VERSION}\n`);
+  console.log(`Mode: ${summary.mode}`);
+  console.log(`Home: ${summary.home}`);
 
   // Daemon info
   if (daemonStatus.running && daemonStatus.info) {
@@ -170,21 +235,22 @@ export async function runStatus(): Promise<void> {
 
     console.log(`Daemon: RUNNING (PID: ${daemonStatus.info.pid}, uptime: ${uptimeStr})`);
     console.log(`Gateway: ws://${daemonStatus.info.bind}:${daemonStatus.info.port}`);
+    if (summary.node?.nodeId) {
+      console.log(`Node ID: ${summary.node.nodeId}`);
+    }
   } else {
     if (daemonStatus.stale) {
       await removePidFile();
     }
-    // No running PID — check if gateway is reachable (Docker/external)
-    const gatewayUp = await probeGateway('127.0.0.1', 18790);
-    if (gatewayUp) {
-      console.log(`Daemon: RUNNING (via Docker or external process)`);
-      console.log(`Gateway: ws://127.0.0.1:18790`);
-    } else {
-      console.log(`Daemon: NOT RUNNING`);
-    }
+    console.log(`Daemon: NOT RUNNING`);
   }
 
   console.log(`PID file: ${getPidPath()}`);
+  console.log(`Projects: ${summary.collaboration.projectCount}`);
+  console.log(`Shared sessions: ${summary.collaboration.sharedSessionCount}`);
+  console.log(`Network sessions: ${summary.collaboration.networkSessionCount}`);
+  console.log(`Trusts: ${summary.collaboration.trustCount} (${summary.collaboration.trustedCount} trusted)`);
+  console.log(`Pending invites: ${summary.collaboration.pendingInviteCount}`);
 
   // Try to load config for additional info
   try {
@@ -225,42 +291,21 @@ export async function runStatus(): Promise<void> {
   }
 }
 
-/** Probe the gateway port to check if Tako is reachable. */
-async function probeGateway(bind: string, port: number): Promise<boolean> {
-  try {
-    const resp = await fetch(`http://${bind}:${port}/healthz`);
-    return resp.ok;
-  } catch {
-    return false;
-  }
-}
-
 /** Attach TUI to running daemon via gateway WebSocket. */
 export async function runTui(): Promise<void> {
   const status = await getDaemonStatus();
 
-  // Determine gateway address: PID file first, then try default (Docker/external)
-  let bind = '127.0.0.1';
-  let port = 18790;
-
-  if (status.running && status.info) {
-    bind = status.info.bind;
-    port = status.info.port;
-  } else {
-    // No PID file — maybe running in Docker or externally. Probe the default port.
-    const reachable = await probeGateway(bind, port);
-    if (!reachable) {
-      if (status.stale) {
-        await removePidFile();
-      }
-      console.log('Tako is not running. Start it first:');
-      console.log('  tako start -d           Start as daemon');
-      console.log('  tako start              Start in foreground');
-      console.log('  docker compose up -d    Start with Docker');
-      process.exit(1);
+  if (!status.running || !status.info) {
+    if (status.stale) {
+      await removePidFile();
     }
-    console.log('(No PID file found — detected Tako on gateway port)');
+    console.log('Tako is not running for the current home. Start it first:');
+    console.log('  tako start -d           Start as daemon');
+    console.log('  tako start              Start in foreground');
+    process.exit(1);
   }
+  const bind = status.info.bind;
+  const port = status.info.port;
 
   const { default: WebSocket } = await import('ws');
   const wsUrl = `ws://${bind}:${port}`;

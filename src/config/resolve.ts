@@ -4,15 +4,15 @@
  *
  * Resolution order:
  * 1. Explicit --config path
- * 2. ~/.tako/tako.json (user home)
+ * 2. <home>/tako.json
  * 3. DEFAULT_CONFIG (hardcoded defaults)
  */
 
-import { readFile, access, rename as fsRename } from 'node:fs/promises';
-import { resolve, join, isAbsolute } from 'node:path';
-import { homedir } from 'node:os';
+import { readFile, access, rename as fsRename, mkdir as fsMkdir } from 'node:fs/promises';
+import { resolve, join, isAbsolute, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import { type TakoConfig, DEFAULT_CONFIG } from './schema.js';
+import { expandHomePath, getRuntimeHome } from '../core/paths.js';
 
 const MAX_BACKUPS = 5;
 
@@ -20,22 +20,19 @@ const MAX_BACKUPS = 5;
  * Resolve a path that may contain ~ (home directory).
  */
 function expandHome(p: string): string {
-  if (p.startsWith('~/') || p === '~') {
-    return join(homedir(), p.slice(1));
-  }
-  return p;
+  return expandHomePath(p);
 }
 
 /**
  * Resolve workspace-like paths safely:
  * - ~ is expanded to home
  * - absolute paths are kept as-is
- * - relative paths are anchored under ~/.tako (never CWD)
+ * - relative paths are anchored under <home> (never CWD)
  */
-function resolveWorkspacePath(p: string): string {
+function resolveWorkspacePath(p: string, home: string): string {
   const expanded = expandHome(p);
   if (isAbsolute(expanded)) return expanded;
-  return resolve(join(homedir(), '.tako'), expanded);
+  return resolve(join(home), expanded);
 }
 
 /**
@@ -94,6 +91,7 @@ function mergeConfig(defaults: TakoConfig, overrides: Partial<TakoConfig>): Tako
     },
     audit: { ...defaults.audit, ...overrides.audit },
     queue: { ...defaults.queue, ...overrides.queue },
+    network: { ...defaults.network, ...overrides.network },
     security: {
       ...defaults.security,
       ...overrides.security,
@@ -113,16 +111,24 @@ function mergeConfig(defaults: TakoConfig, overrides: Partial<TakoConfig>): Tako
   };
 }
 
+function normalizeHubUrl(input?: string): string | undefined {
+  if (!input) return undefined;
+  const trimmed = input.trim();
+  if (!trimmed) return undefined;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed.replace(/\/+$/, '');
+  return `http://${trimmed.replace(/\/+$/, '')}`;
+}
+
 /**
  * Find the config file path using the resolution order:
  *   1. Explicit path (--config)
- *   2. ~/.tako/tako.json (user home)
+ *   2. <home>/tako.json
  *   3. null (use defaults)
  */
-function findConfigFile(explicitPath?: string): string | null {
+function findConfigFile(explicitPath?: string, home?: string): string | null {
   if (explicitPath) return explicitPath;
 
-  const homePath = join(homedir(), '.tako', 'tako.json');
+  const homePath = join(home ?? getRuntimeHome(), 'tako.json');
   if (existsSync(homePath)) return homePath;
 
   return null;
@@ -132,8 +138,8 @@ function findConfigFile(explicitPath?: string): string | null {
  * Load .env file from ~/.tako/.env and inject into process.env
  * (only sets vars that are not already set).
  */
-async function loadTakoEnv(): Promise<void> {
-  const envPath = join(homedir(), '.tako', '.env');
+async function loadTakoEnv(home?: string): Promise<void> {
+  const envPath = join(home ?? getRuntimeHome(), '.env');
   try {
     const raw = await readFile(envPath, 'utf-8');
     for (const line of raw.split('\n')) {
@@ -205,11 +211,12 @@ function validateConfig(config: TakoConfig, filePath: string | null): void {
 /**
  * Load and resolve the Tako config.
  */
-export async function resolveConfig(configPath?: string): Promise<TakoConfig> {
-  // Load ~/.tako/.env first so API keys are available
-  await loadTakoEnv();
+export async function resolveConfig(configPath?: string, opts?: { home?: string }): Promise<TakoConfig> {
+  const home = opts?.home ?? getRuntimeHome();
+  // Load <home>/.env first so API keys are available
+  await loadTakoEnv(home);
 
-  const filePath = findConfigFile(configPath);
+  const filePath = findConfigFile(configPath, home);
 
   let fileConfig: Partial<TakoConfig> = {};
   if (filePath) {
@@ -231,12 +238,15 @@ export async function resolveConfig(configPath?: string): Promise<TakoConfig> {
   validateConfig(config, filePath);
 
   // Resolve workspace paths: never anchor to CWD.
-  config.memory.workspace = resolveWorkspacePath(config.memory.workspace);
-  config.agents.defaults.workspace = resolveWorkspacePath(config.agents.defaults.workspace);
+  config.memory.workspace = resolveWorkspacePath(config.memory.workspace, home);
+  config.agents.defaults.workspace = resolveWorkspacePath(config.agents.defaults.workspace, home);
   config.agents.list = config.agents.list.map((entry) => ({
     ...entry,
-    workspace: entry.workspace ? resolveWorkspacePath(entry.workspace) : entry.workspace,
+    workspace: entry.workspace ? resolveWorkspacePath(entry.workspace, home) : entry.workspace,
   }));
+  if (config.network?.hub) {
+    config.network.hub = normalizeHubUrl(config.network.hub);
+  }
 
   // Expand ~ in skill dirs and resolve relative paths against the config file's directory
   // (or cwd if no config file). This ensures './skills' always points to the right place.
@@ -295,8 +305,8 @@ export async function resolveConfig(configPath?: string): Promise<TakoConfig> {
  * Reads the current file, merges the patch, and writes it back.
  * Only writes to ~/.tako/tako.json (never CWD to avoid stale overrides).
  */
-export async function patchConfig(patch: Record<string, unknown>): Promise<void> {
-  const configPath = join(homedir(), '.tako', 'tako.json');
+export async function patchConfig(patch: Record<string, unknown>, opts?: { home?: string }): Promise<void> {
+  const configPath = join(opts?.home ?? getRuntimeHome(), 'tako.json');
   let existing: Record<string, unknown> = {};
   try {
     const raw = await readFile(configPath, 'utf-8');
@@ -309,6 +319,7 @@ export async function patchConfig(patch: Record<string, unknown>): Promise<void>
   // Deep merge patch into existing
   const merged = deepMergePatch(existing, patch);
   const { writeFile: writeFileAsync } = await import('node:fs/promises');
+  await fsMkdir(dirname(configPath), { recursive: true });
   await writeFileAsync(configPath, JSON.stringify(merged, null, 2) + '\n', 'utf-8');
 }
 
@@ -352,5 +363,5 @@ function deepMergePatch(target: Record<string, unknown>, source: Record<string, 
  * Check if a Tako config exists anywhere in the resolution chain.
  */
 export function hasConfig(): boolean {
-  return findConfigFile() !== null;
+  return findConfigFile(undefined, getRuntimeHome()) !== null;
 }

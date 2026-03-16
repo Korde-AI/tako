@@ -3,11 +3,12 @@
  * Core extension (available by default, can be disabled).
  */
 
-import { exec as execCb } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Tool, ToolContext, ToolResult } from './tool.js';
+import { getAllowedToolRoot } from './root-policy.js';
 
-const execAsync = promisify(execCb);
+const execFileAsync = promisify(execFile);
 
 interface GitParams {
   subcommand: string;
@@ -44,10 +45,10 @@ export const gitTool: Tool = {
       return { output: '', success: false, error: `Blocked destructive git operation: ${fullCmd}` };
     }
 
-    const command = `git ${subcommand} ${(args ?? []).join(' ')}`.trim();
+    const cwd = getAllowedToolRoot(ctx);
     try {
-      const { stdout, stderr } = await execAsync(command, {
-        cwd: ctx.workDir,
+      const { stdout, stderr } = await execFileAsync('git', [subcommand, ...(args ?? [])], {
+        cwd,
         timeout: 30_000,
         maxBuffer: 1024 * 1024,
       });

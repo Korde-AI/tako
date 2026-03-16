@@ -72,6 +72,10 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** Arbitrary metadata from the agent loop */
   meta?: Record<string, unknown>;
+  /** Canonical execution context for the current turn */
+  executionContext?: ExecutionContext;
+  /** Effective root this tool call is allowed to operate within */
+  allowedToolRoot?: string;
 }
 
 /** Result returned by a tool execution. */
@@ -144,3 +148,4 @@ export interface Tool {
    */
   execute(params: unknown, ctx: ToolContext): Promise<ToolResult>;
 }
+import type { ExecutionContext } from '../core/execution-context.js';

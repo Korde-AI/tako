@@ -68,8 +68,16 @@ export interface TakoConfig {
   skillChannels?: Record<string, Record<string, unknown>>;
   /** Per-skill extension configuration. Keyed by skill name, then extension type. */
   skillExtensions?: Record<string, Record<string, Record<string, unknown>>>;
+  /** Network configuration for optional hub connectivity. */
+  network?: NetworkConfig;
   /** Runtime-only: absolute path of the config file that was loaded. */
   _configPath?: string;
+}
+
+export interface NetworkConfig {
+  enabled?: boolean;
+  hub?: string;
+  heartbeatSeconds?: number;
 }
 
 // ─── Skills config ──────────────────────────────────────────────────
@@ -239,6 +247,19 @@ export interface ToolsConfig {
   exec?: ExecConfig;
   /** Browser automation tools (Playwright-backed). */
   browser?: BrowserToolsConfig;
+  /** ACP runtime (acpx-backed coding agent sessions). */
+  acp?: AcpToolsConfig;
+}
+
+export interface AcpToolsConfig {
+  /** Enable ACP integration (default: true). */
+  enabled?: boolean;
+  /** Permission mode: 'approve-reads' | 'approve-all' | 'deny-all'. */
+  permissionMode?: 'approve-reads' | 'approve-all' | 'deny-all';
+  /** Default agent (default: 'claude'). */
+  defaultAgent?: string;
+  /** Timeout in seconds for one-shot operations (default: 600). */
+  timeoutSeconds?: number;
 }
 
 export interface BrowserToolsConfig {
@@ -565,7 +586,7 @@ export const DEFAULT_CONFIG: TakoConfig = {
     },
   },
   memory: {
-    workspace: '~/.tako/workspace',
+    workspace: 'workspace',
   },
   gateway: {
     bind: '127.0.0.1',
@@ -587,12 +608,12 @@ export const DEFAULT_CONFIG: TakoConfig = {
   },
   agents: {
     defaults: {
-      workspace: '~/.tako/workspace',
+      workspace: 'workspace',
     },
     list: [],
   },
   skills: {
-    dirs: ['./skills', '~/.tako/skills'],
+    dirs: ['./skills', 'skills'],
   },
   heartbeat: {
     every: '30m',
@@ -629,7 +650,7 @@ export const DEFAULT_CONFIG: TakoConfig = {
     },
     symbols: {
       enabled: true,
-      persistPath: '~/.tako/cache/symbol-index.json',
+      persistPath: 'cache/symbol-index.json',
       maxFiles: 5000,
     },
   },
@@ -644,6 +665,9 @@ export const DEFAULT_CONFIG: TakoConfig = {
     cap: 25,
     dropStrategy: 'oldest',
     maxWaitMs: 10_000,
+  },
+  network: {
+    heartbeatSeconds: 30,
   },
   security: {
     rateLimits: {

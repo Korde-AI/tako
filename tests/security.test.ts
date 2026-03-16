@@ -82,7 +82,7 @@ describe('ToolValidator', () => {
     const v = new ToolValidator({ level: 'strict' }, '/home/user/workspace');
     const result = v.validatePath('../../etc/passwd', '/home/user/workspace', true);
     assert.ok(!result.allowed);
-    assert.ok(result.blockReason?.includes('Path traversal'));
+    assert.ok(result.blockReason?.includes('allowed root'));
   });
 
   it('warns on path traversal in warn mode', async () => {
@@ -98,6 +98,13 @@ describe('ToolValidator', () => {
     const v = new ToolValidator({ level: 'strict' }, '/home/user/workspace');
     const result = v.validatePath('src/index.ts', '/home/user/workspace', true);
     assert.ok(result.allowed);
+  });
+
+  it('blocks reads outside the allowed root', async () => {
+    const { ToolValidator } = await import('../src/core/tool-validator.js');
+    const v = new ToolValidator({ level: 'strict' }, '/home/user/workspace');
+    const result = v.validatePathWithinRoot('../other-project/secret.txt', '/home/user/workspace/project', false, '/home/user/workspace/project');
+    assert.ok(!result.allowed);
   });
 
   it('blocks dangerous shell commands in strict mode', async () => {
@@ -119,6 +126,13 @@ describe('ToolValidator', () => {
     const v = new ToolValidator({ level: 'strict' }, '/tmp');
     const result = v.validateCommand('ls -la /home/user');
     assert.ok(result.allowed);
+  });
+
+  it('blocks cd outside the allowed root', async () => {
+    const { ToolValidator } = await import('../src/core/tool-validator.js');
+    const v = new ToolValidator({ level: 'strict' }, '/tmp');
+    const result = v.validateCommandWithinRoot('cd .. && pwd', '/tmp/project');
+    assert.ok(!result.allowed);
   });
 
   it('blocks private IP URLs in strict mode', async () => {

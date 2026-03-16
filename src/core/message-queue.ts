@@ -25,6 +25,8 @@ export interface QueuedMessage {
   content: string;
   channelId: string;
   authorId: string;
+  principalId?: string;
+  principalName?: string;
   timestamp: number;
   messageId: string;
   attachments?: Array<{ type: string; url?: string; filename?: string; mimeType?: string }>;
@@ -215,7 +217,7 @@ export class MessageQueue {
     }
 
     // Detect group chat (multiple authors)
-    const authors = new Set(normalized.map((m) => String(m.authorId ?? 'unknown')));
+    const authors = new Set(normalized.map((m) => String(m.principalId ?? m.authorId ?? 'unknown')));
     const isGroup = authors.size > 1;
 
     // Calculate time span
@@ -226,7 +228,7 @@ export class MessageQueue {
     const lines: string[] = [];
     for (const msg of normalized) {
       const content = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '');
-      const author = String(msg.authorId ?? 'unknown');
+      const author = String(msg.principalName ?? msg.principalId ?? msg.authorId ?? 'unknown');
       if (isGroup) {
         lines.push(`[${author}]: ${content}`);
       } else {

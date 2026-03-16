@@ -12,6 +12,7 @@ import type { Tool, ToolContext, ToolResult } from './tool.js';
 import { ExecSafety, type ExecSafetyOptions } from './exec-safety.js';
 import { ExecApprovalManager, type ApprovalConfig } from '../core/exec-approvals.js';
 import type { CacheManager } from '../cache/manager.js';
+import { getAllowedToolRoot, resolveSubdirWithinAllowedRoot } from './root-policy.js';
 
 const execAsync = promisify(execCb);
 
@@ -54,6 +55,7 @@ function getExecSafety(): ExecSafety {
 interface ExecParams {
   command: string;
   timeout?: number;
+  cwd?: string;
 }
 
 export const execTool: Tool = {
@@ -65,17 +67,31 @@ export const execTool: Tool = {
     properties: {
       command: { type: 'string', description: 'Shell command to execute' },
       timeout: { type: 'number', description: 'Timeout in milliseconds (default: 30000)' },
+      cwd: { type: 'string', description: 'Optional working directory relative to the allowed tool root' },
     },
     required: ['command'],
   },
 
   async execute(params: unknown, ctx: ToolContext): Promise<ToolResult> {
-    const { command, timeout } = params as ExecParams;
+    const { command, timeout, cwd } = params as ExecParams;
     const safety = getExecSafety();
+    const allowedRoot = getAllowedToolRoot(ctx);
+    const cwdResolution = resolveSubdirWithinAllowedRoot({
+      ...ctx,
+      allowedToolRoot: allowedRoot,
+    }, cwd);
+    if (!cwdResolution.ok) {
+      return {
+        output: `Command blocked: ${cwdResolution.error}`,
+        success: false,
+        error: cwdResolution.error,
+      };
+    }
+    const effectiveCwd = cwdResolution.fullPath;
 
     // Update safety with current context
-    if (ctx.workspaceRoot) safety.setWorkspaceRoot(ctx.workspaceRoot);
-    if (ctx.workDir) safety.setWorkDir(ctx.workDir);
+    safety.setWorkspaceRoot(allowedRoot);
+    safety.setWorkDir(effectiveCwd);
 
     // Check exec approvals before safety validation
     if (approvalManager) {
@@ -118,7 +134,7 @@ export const execTool: Tool = {
 
     // Check tool cache for deterministic commands
     if (cacheManager) {
-      const cached = cacheManager.tool.get(command, ctx.workDir);
+      const cached = cacheManager.tool.get(command, effectiveCwd);
       if (cached !== null) {
         return { output: warningPrefix + cached.output, success: cached.success };
       }
@@ -126,7 +142,7 @@ export const execTool: Tool = {
 
     try {
       const { stdout, stderr } = await execAsync(validation.command, {
-        cwd: ctx.workDir,
+        cwd: effectiveCwd,
         timeout: validation.timeout,
         maxBuffer: validation.maxOutputSize,
       });
@@ -137,7 +153,7 @@ export const execTool: Tool = {
         : output;
 
       // Cache the result for future calls
-      cacheManager?.tool.set(command, ctx.workDir, truncated, true);
+      cacheManager?.tool.set(command, effectiveCwd, truncated, true);
 
       return { output: warningPrefix + truncated, success: true };
     } catch (err: unknown) {
@@ -157,6 +173,7 @@ interface ProcessParams {
   action: 'start' | 'stop' | 'list';
   command?: string;
   id?: string;
+  cwd?: string;
 }
 
 export const processTool: Tool = {
@@ -169,12 +186,13 @@ export const processTool: Tool = {
       action: { type: 'string', enum: ['start', 'stop', 'list'], description: 'Action to perform' },
       command: { type: 'string', description: 'Command to start (for "start" action)' },
       id: { type: 'string', description: 'Process ID (for "stop" action)' },
+      cwd: { type: 'string', description: 'Optional working directory relative to the allowed tool root' },
     },
     required: ['action'],
   },
 
   async execute(params: unknown, ctx: ToolContext): Promise<ToolResult> {
-    const { action, command, id } = params as ProcessParams;
+    const { action, command, id, cwd } = params as ProcessParams;
 
     switch (action) {
       case 'start': {
@@ -182,6 +200,17 @@ export const processTool: Tool = {
 
         // Validate the command before starting
         const safety = getExecSafety();
+        const allowedRoot = getAllowedToolRoot(ctx);
+        const cwdResolution = resolveSubdirWithinAllowedRoot({
+          ...ctx,
+          allowedToolRoot: allowedRoot,
+        }, cwd);
+        if (!cwdResolution.ok) {
+          return { output: '', success: false, error: cwdResolution.error };
+        }
+        const effectiveCwd = cwdResolution.fullPath;
+        safety.setWorkspaceRoot(allowedRoot);
+        safety.setWorkDir(effectiveCwd);
         const validation = safety.validate(command);
         if (!validation.allowed) {
           return {
@@ -193,7 +222,7 @@ export const processTool: Tool = {
 
         const procId = crypto.randomUUID().slice(0, 8);
         const child = spawn('sh', ['-c', command], {
-          cwd: ctx.workDir,
+          cwd: effectiveCwd,
           stdio: 'pipe',
           detached: true,
         });
