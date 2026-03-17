@@ -60,6 +60,7 @@ const PROVIDER_AUTH_METHODS: Record<string, { value: string; label: string; hint
   anthropic: [
     { value: 'api_key', label: 'API Key', hint: 'paste ANTHROPIC_API_KEY' },
     { value: 'setup_token', label: 'Setup Token', hint: 'from `claude setup-token`' },
+    { value: 'oauth', label: 'OAuth (Claude Max/Pro)', hint: 'browser login to claude.ai' },
   ],
   openai: [
     { value: 'api_key', label: 'API Key', hint: 'paste OPENAI_API_KEY' },

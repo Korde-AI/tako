@@ -43,6 +43,14 @@ export interface OAuthProviderConfig {
 
 /** Known OAuth configurations for providers. */
 export const OAUTH_PROVIDERS: Record<string, OAuthProviderConfig> = {
+  'anthropic': {
+    provider: 'anthropic',
+    client_id: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
+    auth_url: 'https://claude.ai/oauth/authorize',
+    token_url: 'https://console.anthropic.com/v1/oauth/token',
+    redirect_uri: 'https://console.anthropic.com/oauth/code/callback',
+    scopes: ['org:create_api_key', 'user:profile', 'user:inference'],
+  },
   'openai-codex': {
     provider: 'openai-codex',
     client_id: 'app_EMoamEEZ73f0CkXaXp7hrann',
@@ -72,7 +80,14 @@ export function buildAuthUrl(params: AuthUrlParams): string {
   url.searchParams.set('scope', config.scopes.join(' '));
   url.searchParams.set('code_challenge', code_challenge);
   url.searchParams.set('code_challenge_method', 'S256');
-  if (state) url.searchParams.set('state', state);
+
+  // Anthropic uses 'code: true' param and state as the verifier
+  if (config.provider === 'anthropic') {
+    url.searchParams.set('code', 'true');
+    url.searchParams.set('state', code_verifier);
+  } else if (state) {
+    url.searchParams.set('state', state);
+  }
 
   return url.toString();
 }
@@ -92,16 +107,33 @@ export async function exchangeCode(
   code: string,
   code_verifier: string,
 ): Promise<TokenResponse> {
+  // Anthropic uses JSON body; others use form-urlencoded
+  const isAnthropic = config.provider === 'anthropic';
+
+  // Anthropic code format may be "code#state" — extract both
+  let actualCode = code;
+  let state: string | undefined;
+  if (isAnthropic && code.includes('#')) {
+    const parts = code.split('#');
+    actualCode = parts[0];
+    state = parts[1];
+  }
+
+  const payload: Record<string, string> = {
+    grant_type: 'authorization_code',
+    code: actualCode,
+    redirect_uri: config.redirect_uri,
+    client_id: config.client_id,
+    code_verifier,
+  };
+  if (state) payload.state = state;
+
   const res = await fetch(config.token_url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: config.redirect_uri,
-      client_id: config.client_id,
-      code_verifier,
-    }),
+    headers: {
+      'Content-Type': isAnthropic ? 'application/json' : 'application/x-www-form-urlencoded',
+    },
+    body: isAnthropic ? JSON.stringify(payload) : new URLSearchParams(payload),
   });
 
   if (!res.ok) {
@@ -118,14 +150,19 @@ export async function refreshToken(
   config: OAuthProviderConfig,
   refresh_token: string,
 ): Promise<TokenResponse> {
+  const isAnthropic = config.provider === 'anthropic';
+  const payload = {
+    grant_type: 'refresh_token',
+    refresh_token,
+    client_id: config.client_id,
+  };
+
   const res = await fetch(config.token_url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token,
-      client_id: config.client_id,
-    }),
+    headers: {
+      'Content-Type': isAnthropic ? 'application/json' : 'application/x-www-form-urlencoded',
+    },
+    body: isAnthropic ? JSON.stringify(payload) : new URLSearchParams(payload),
   });
 
   if (!res.ok) {
@@ -292,7 +329,31 @@ export async function runOAuthFlow(
   const state = randomBytes(16).toString('hex');
   const authUrl = buildAuthUrl({ config, code_verifier, state });
 
-  // Start local callback server
+  const isAnthropic = config.provider === 'anthropic';
+
+  // Anthropic redirects to console.anthropic.com, not localhost
+  // So we skip the local server and just prompt for the code
+  if (isAnthropic) {
+    ui.log('Opening browser for Anthropic authentication...');
+    ui.log('After logging in, you\'ll see a code. Copy the entire code (format: code#state).');
+    const opened = await openBrowser(authUrl);
+    if (!opened) {
+      ui.log('Could not open browser. Visit this URL manually:');
+    }
+    ui.log(authUrl);
+
+    const pastedCode = await ui.prompt('Paste the authorization code (format: code#state):');
+    if (!pastedCode) {
+      ui.log('No authorization code received.');
+      return null;
+    }
+
+    const tokenResponse = await exchangeCode(config, pastedCode.trim(), code_verifier);
+    const credential = await storeOAuthTokens('anthropic', tokenResponse, config.client_id);
+    return { credential, provider: 'anthropic' };
+  }
+
+  // Start local callback server (for non-Anthropic providers)
   const server = await startLocalOAuthServer(state);
 
   // Open browser
