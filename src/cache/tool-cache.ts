@@ -39,6 +39,7 @@ const DEFAULT_TTL_OVERRIDES: Record<string, number> = {
   'git branch': 15,
   'ls': 30,
   'find': 15,
+  'fd': 15,
   'grep': 15,
   'rg': 15,
   'wc': 30,

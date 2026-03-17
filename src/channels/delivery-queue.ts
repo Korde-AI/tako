@@ -6,10 +6,10 @@
  * with max 3 attempts. Failed messages move to ~/.tako/delivery-queue/failed/.
  */
 
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdir, readFile, writeFile, readdir, rename, unlink } from 'node:fs/promises';
 import type { Channel, OutboundMessage } from './channel.js';
+import { getRuntimePaths } from '../core/paths.js';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -27,7 +27,7 @@ interface QueuedMessage {
 // ─── Paths ──────────────────────────────────────────────────────────
 
 function getQueueDir(): string {
-  return join(homedir(), '.tako', 'delivery-queue');
+  return getRuntimePaths().deliveryQueueDir;
 }
 
 function getFailedDir(): string {

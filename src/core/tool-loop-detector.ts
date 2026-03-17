@@ -98,9 +98,10 @@ export class ToolLoopDetector {
     return null;
   }
 
-  /** Clear history for a session (on new turn). */
+  /** Clear history for a session (on new turn). Clears both call history and missing-result counter. */
   clearSession(sessionId: string): void {
     this.history.delete(sessionId);
+    this.history.delete(`missing:${sessionId}`);
   }
 
   /** Clear all history. */

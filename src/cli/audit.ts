@@ -28,7 +28,10 @@ function formatEntry(entry: AuditEntry): string {
   const details = Object.entries(entry.details)
     .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
     .join(' ');
-  return `  ${date} ${time}  [${entry.event}] ${entry.action}  agent=${entry.agentId}  ${status}  ${details}`;
+  const principal = entry.principalId ? ` principal=${entry.principalName ?? entry.principalId}` : '';
+  const project = entry.projectId ? ` project=${entry.projectSlug ?? entry.projectId}` : '';
+  const shared = entry.sharedSessionId ? ` shared=${entry.sharedSessionId}` : '';
+  return `  ${date} ${time}  [${entry.event}] ${entry.action}  agent=${entry.agentId}${principal}${project}${shared}  ${status}  ${details}`;
 }
 
 export async function runAudit(args: string[]): Promise<void> {

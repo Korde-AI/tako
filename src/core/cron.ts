@@ -19,8 +19,8 @@
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { getRuntimePaths } from './paths.js';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -119,7 +119,7 @@ export class CronScheduler {
   private tickIntervalMs = 60_000; // check every minute
 
   constructor(dir?: string) {
-    const base = dir ?? join(homedir(), '.tako', 'cron');
+    const base = dir ?? getRuntimePaths().cronDir;
     this.jobsPath = join(base, 'jobs.json');
     this.runLogPath = join(base, 'runs');
   }

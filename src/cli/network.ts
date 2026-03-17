@@ -517,6 +517,19 @@ async function runInvite(args: string[]): Promise<void> {
         offeredRole: role,
         expiresAt: readFlag(args, '--expires-at'),
       });
+      await stores.projects.update(project.projectId, {
+        collaboration: {
+          ...(project.collaboration ?? {}),
+          mode: 'collaborative',
+          announceJoins: true,
+          autoArtifactSync: project.collaboration?.autoArtifactSync ?? true,
+        },
+        metadata: {
+          ...(project.metadata ?? {}),
+          collaborationActivatedAt: new Date().toISOString(),
+          collaborationActivatedReason: `invite_create:${invite.inviteId}`,
+        },
+      });
       await logInviteEvent('invite_create', true, {
         inviteId: invite.inviteId,
         projectId: project.projectId,

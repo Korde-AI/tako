@@ -4,15 +4,18 @@
  * Allows the agent to restart itself and deliver a post-restart note.
  */
 
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type { ToolContext, ToolResult } from './tool.js';
 import type { ToolRegistry } from './registry.js';
+import { getRuntimePaths } from '../core/paths.js';
 
-const RESTART_GUARD_PATH = join(homedir(), '.tako', 'restart-guard.json');
 const MIN_RESTART_INTERVAL_MS = 90_000;
+
+function getRestartGuardPath(): string {
+  return join(getRuntimePaths().runtimeDir, 'restart-guard.json');
+}
 
 export function registerSystemTools(registry: ToolRegistry, opts: { gatewayPort: number; gatewayBind: string }): void {
   registry.register({
@@ -36,8 +39,8 @@ export function registerSystemTools(registry: ToolRegistry, opts: { gatewayPort:
       try {
         // Guard against restart loops caused by repeated tool calls.
         try {
-          if (existsSync(RESTART_GUARD_PATH)) {
-            const raw = await readFile(RESTART_GUARD_PATH, 'utf-8');
+          if (existsSync(getRestartGuardPath())) {
+            const raw = await readFile(getRestartGuardPath(), 'utf-8');
             const parsed = JSON.parse(raw) as { lastRestartAt?: number };
             const last = parsed.lastRestartAt ?? 0;
             const elapsed = Date.now() - last;
@@ -50,7 +53,7 @@ export function registerSystemTools(registry: ToolRegistry, opts: { gatewayPort:
           // Ignore malformed guard file.
         }
 
-        await writeFile(RESTART_GUARD_PATH, JSON.stringify({ lastRestartAt: Date.now() }) + '\n', { mode: 0o600 });
+        await writeFile(getRestartGuardPath(), JSON.stringify({ lastRestartAt: Date.now() }) + '\n', { mode: 0o600 });
 
         const res = await fetch(`http://${opts.gatewayBind}:${opts.gatewayPort}/restart`, {
           method: 'POST',

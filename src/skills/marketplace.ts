@@ -9,8 +9,8 @@ import { exec as execCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, writeFile, mkdir, rm, access } from 'node:fs/promises';
 import { join, resolve, normalize } from 'node:path';
-import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
+import { getRuntimePaths } from '../core/paths.js';
 
 const execAsync = promisify(execCb);
 
@@ -45,8 +45,8 @@ export class SkillMarketplace {
   private metadataPath: string;
 
   constructor(installDir?: string) {
-    this.installDir = resolve(installDir ?? join(homedir(), '.tako', 'skills'));
-    this.metadataPath = join(homedir(), '.tako', 'installed-skills.json');
+    this.installDir = resolve(installDir ?? join(getRuntimePaths().home, 'skills'));
+    this.metadataPath = join(getRuntimePaths().home, 'installed-skills.json');
   }
 
   /**

@@ -27,6 +27,8 @@ export interface ThreadBinding {
   agentId: string;
   /** Session key for messages in this thread */
   sessionKey: string;
+  /** Whether this thread is bound to an ACP runtime session */
+  isAcp?: boolean;
   /** Timestamp when the binding was created */
   createdAt: number;
   /** Updated on each message routed through this thread */

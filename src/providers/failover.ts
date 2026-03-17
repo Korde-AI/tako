@@ -20,7 +20,7 @@ interface CooldownEntry {
 }
 
 /** Error status codes that trigger fallback. */
-const FALLBACK_STATUS_CODES = new Set([429, 503, 529]);
+const FALLBACK_STATUS_CODES = new Set([429, 500, 502, 503, 504, 529]);
 
 export interface FailoverProviderOpts {
   /** Map of provider ID → Provider instance. */
@@ -29,6 +29,10 @@ export interface FailoverProviderOpts {
   chain: string[];
   /** Cooldown duration in ms after a provider fails (default: 60000). */
   cooldownMs?: number;
+  /** Immediate retry attempts per model before falling through (default: 1). */
+  immediateRetries?: number;
+  /** Delay between immediate retries in ms (default: 800). */
+  retryDelayMs?: number;
 }
 
 export class FailoverProvider implements Provider {
@@ -36,12 +40,16 @@ export class FailoverProvider implements Provider {
   private providers: Map<string, Provider>;
   private chain: string[];
   private cooldownMs: number;
+  private immediateRetries: number;
+  private retryDelayMs: number;
   private cooldowns = new Map<string, CooldownEntry>();
 
   constructor(opts: FailoverProviderOpts) {
     this.providers = opts.providers;
     this.chain = opts.chain;
     this.cooldownMs = opts.cooldownMs ?? 60_000;
+    this.immediateRetries = Math.max(0, opts.immediateRetries ?? 1);
+    this.retryDelayMs = Math.max(0, opts.retryDelayMs ?? 800);
   }
 
   /**
@@ -59,19 +67,19 @@ export class FailoverProvider implements Provider {
   }
 
   /** Check if a provider is currently in cooldown. */
-  private isInCooldown(providerId: string): boolean {
-    const entry = this.cooldowns.get(providerId);
+  private isInCooldown(key: string): boolean {
+    const entry = this.cooldowns.get(key);
     if (!entry) return false;
     if (Date.now() >= entry.expiresAt) {
-      this.cooldowns.delete(providerId);
+      this.cooldowns.delete(key);
       return false;
     }
     return true;
   }
 
   /** Put a provider into cooldown. */
-  private setCooldown(providerId: string): void {
-    this.cooldowns.set(providerId, {
+  private setCooldown(key: string): void {
+    this.cooldowns.set(key, {
       expiresAt: Date.now() + this.cooldownMs,
     });
   }
@@ -83,6 +91,8 @@ export class FailoverProvider implements Provider {
     if (status && FALLBACK_STATUS_CODES.has(status)) return true;
     const msg = String((err as { message?: string }).message ?? '').toLowerCase();
     return msg.includes('rate_limit') ||
+      msg.includes('api_error') ||
+      msg.includes('internal server error') ||
       msg.includes('overloaded') ||
       msg.includes('resource exhausted') ||
       msg.includes('capacity') ||
@@ -101,43 +111,55 @@ export class FailoverProvider implements Provider {
         continue;
       }
 
-      if (this.isInCooldown(providerId)) {
-        console.warn(`[failover] Provider "${providerId}" in cooldown, skipping`);
+      if (this.isInCooldown(modelRef)) {
+        console.warn(`[failover] Model "${modelRef}" in cooldown, skipping`);
         continue;
       }
 
-      let emittedAnyChunk = false;
-      try {
-        const modifiedReq: ChatRequest = { ...req, model: modelRef };
+      for (let attempt = 0; attempt <= this.immediateRetries; attempt++) {
+        let emittedAnyChunk = false;
+        try {
+          const modifiedReq: ChatRequest = { ...req, model: modelRef };
 
-        if (modelRef !== this.chain[0]) {
-          console.log(`[failover] Using fallback model: ${modelRef}`);
-        }
+          if (modelRef !== this.chain[0] && attempt === 0) {
+            console.log(`[failover] Using fallback model: ${modelRef}`);
+          }
 
-        // Stream-through chunks immediately for low latency.
-        for await (const chunk of provider.chat(modifiedReq)) {
-          emittedAnyChunk = true;
-          yield chunk;
-        }
-        return;
-      } catch (err: unknown) {
-        lastError = err;
+          // Stream-through chunks immediately for low latency.
+          for await (const chunk of provider.chat(modifiedReq)) {
+            emittedAnyChunk = true;
+            yield chunk;
+          }
+          return;
+        } catch (err: unknown) {
+          lastError = err;
 
-        // If streaming already started, we cannot safely fallback mid-response.
-        if (emittedAnyChunk) {
+          // If streaming already started, we cannot safely retry or fallback mid-response.
+          if (emittedAnyChunk) {
+            throw err;
+          }
+
+          if (this.isFallbackError(err) && attempt < this.immediateRetries) {
+            console.warn(
+              `[failover] ${modelRef} transient failure (${this.getErrorStatus(err)}), retrying model (${attempt + 1}/${this.immediateRetries})`,
+            );
+            if (this.retryDelayMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, this.retryDelayMs));
+            }
+            continue;
+          }
+
+          if (this.isFallbackError(err)) {
+            this.setCooldown(modelRef);
+            console.warn(
+              `[failover] ${modelRef} failed (${this.getErrorStatus(err)}), trying next fallback`,
+            );
+            break;
+          }
+
+          // Non-retryable error (auth, bad request, etc.) — fail immediately
           throw err;
         }
-
-        if (this.isFallbackError(err)) {
-          this.setCooldown(providerId);
-          console.warn(
-            `[failover] ${modelRef} failed (${this.getErrorStatus(err)}), trying next fallback`,
-          );
-          continue;
-        }
-
-        // Non-retryable error (auth, bad request, etc.) — fail immediately
-        throw err;
       }
     }
 

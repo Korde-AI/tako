@@ -22,7 +22,14 @@ import type {
   ModelInfo,
   ToolDefinition,
 } from './provider.js';
-import { resolveAuth, type ResolvedAuth } from '../auth/storage.js';
+import {
+  resolveAuth,
+  readAuthCredential,
+  refreshOAuthToken,
+  isTokenNearExpiry,
+  type ResolvedAuth,
+  type OAuthCredential,
+} from '../auth/storage.js';
 import { PromptCacheManager, type PromptCacheConfig } from './prompt-cache.js';
 
 /**
@@ -74,12 +81,30 @@ export class AnthropicProvider implements Provider {
     return this.promptCacheManager;
   }
 
-  /** Lazily resolve auth from ~/.tako/auth/anthropic.json if no env keys found. */
+  /** Lazily resolve auth — auth file takes priority over env vars. */
   private async ensureAuth(): Promise<void> {
     if (this.authResolved) return;
     this.authResolved = true;
 
-    // Check if any existing key is actually an OAuth token
+    // Always check auth file first — it's the most intentional config (from onboard/CLI).
+    // This overrides any env var keys that may be stale.
+    const auth = await resolveAuth('anthropic');
+    if (auth) {
+      if (this.isOAuthToken(auth.token) || auth.method === 'setup_token' || auth.method === 'oauth') {
+        this.bearerToken = auth.token;
+        this.apiKeys = []; // Clear env-based keys
+        console.log(`[anthropic] Using ${auth.method} auth from ${auth.source}`);
+        return;
+      }
+      // Auth file has a regular API key — use it instead of env
+      if (auth.source === 'auth_file') {
+        this.apiKeys = [auth.token];
+        console.log(`[anthropic] Using API key from auth file`);
+        return;
+      }
+    }
+
+    // Check if any existing key (from env) is actually an OAuth token
     if (this.apiKeys.length > 0 && this.isOAuthToken(this.apiKeys[0])) {
       this.bearerToken = this.apiKeys[0];
       this.apiKeys = [];
@@ -87,20 +112,76 @@ export class AnthropicProvider implements Provider {
     }
 
     if (this.apiKeys.length === 0) {
-      const auth = await resolveAuth('anthropic');
-      if (auth) {
-        // Auto-detect: if token starts with sk-ant-oat, it's a Bearer token
-        if (this.isOAuthToken(auth.token)) {
-          this.bearerToken = auth.token;
-        } else if (auth.method === 'setup_token' || auth.method === 'oauth') {
-          this.bearerToken = auth.token;
-        } else {
-          this.apiKeys.push(auth.token);
-        }
-      } else {
-        console.warn('[anthropic] No API key found. Set ANTHROPIC_API_KEY or run `tako models auth login --provider anthropic`.');
+      console.warn('[anthropic] No API key found. Set ANTHROPIC_API_KEY or run `tako models auth login --provider anthropic`.');
+    }
+  }
+
+  /**
+   * Proactively refresh the OAuth token if it's near expiry.
+   * Called before each API request when using a bearer token.
+   */
+  private async proactiveRefresh(): Promise<void> {
+    if (!this.bearerToken) return;
+
+    const cred = await readAuthCredential('anthropic');
+    if (!cred) return;
+
+    // Only OAuth credentials with expires_at can be proactively refreshed
+    if (cred.auth_method === 'oauth' && cred.expires_at && isTokenNearExpiry(cred)) {
+      console.log('[anthropic] Token near expiry, proactively refreshing...');
+      const refreshed = await refreshOAuthToken('anthropic');
+      if (refreshed) {
+        this.bearerToken = refreshed.access_token;
       }
     }
+  }
+
+  /**
+   * Attempt to recover from an auth error by refreshing the OAuth token
+   * or falling back to env var API keys.
+   * Returns true if a new credential was obtained and the request should be retried.
+   */
+  private async tryRecoverAuth(err: unknown): Promise<boolean> {
+    if (!this.isAuthError(err)) return false;
+
+    // 1. Try refreshing the OAuth token
+    if (this.bearerToken) {
+      console.warn('[anthropic] Auth error with OAuth token, attempting refresh...');
+      const refreshed = await refreshOAuthToken('anthropic');
+      if (refreshed) {
+        this.bearerToken = refreshed.access_token;
+        return true;
+      }
+
+      // 2. Refresh failed — fall back to env var keys
+      const envKeys = this.resolveApiKeys();
+      if (envKeys.length > 0 && !this.isOAuthToken(envKeys[0])) {
+        console.warn('[anthropic] OAuth token invalid, falling back to env API key');
+        this.bearerToken = null;
+        this.apiKeys = envKeys;
+        return true;
+      }
+
+      console.error(
+        '[anthropic] OAuth token expired/revoked and no fallback API key available.\n' +
+        '            Run `tako models auth login --provider anthropic` to re-authenticate.',
+      );
+    }
+
+    return false;
+  }
+
+  /** Check if an error is an authentication/authorization error. */
+  private isAuthError(err: unknown): boolean {
+    if (!err || typeof err !== 'object') return false;
+    const status = (err as { status?: number }).status;
+    if (status === 401 || status === 403) return true;
+    // Anthropic returns 400 with "invalid_request_error" for revoked tokens
+    if (status === 400) {
+      const msg = String((err as { message?: string }).message ?? '').toLowerCase();
+      return msg.includes('invalid') || msg.includes('authentication') || msg.includes('unauthorized');
+    }
+    return false;
   }
 
   /**
@@ -203,6 +284,9 @@ export class AnthropicProvider implements Provider {
 
     // Bearer token path (setup_token / oauth) — single token, no rotation
     if (this.bearerToken) {
+      // Proactively refresh if near expiry
+      await this.proactiveRefresh();
+
       const client = this.createClient(this.bearerToken);
       try {
         if (req.stream !== false) {
@@ -212,6 +296,24 @@ export class AnthropicProvider implements Provider {
         }
         return;
       } catch (err: unknown) {
+        // Reactive: try refreshing/falling back on auth errors, then retry once
+        const recovered = await this.tryRecoverAuth(err);
+        if (recovered) {
+          const retryToken = this.bearerToken ?? this.apiKeys[0];
+          if (retryToken) {
+            const retryClient = this.createClient(retryToken);
+            try {
+              if (req.stream !== false) {
+                yield* this.chatStreaming(retryClient, model, systemParam, messages, tools, req);
+              } else {
+                yield* this.chatNonStreaming(retryClient, model, systemParam, messages, tools, req);
+              }
+              return;
+            } catch (retryErr: unknown) {
+              throw this.wrapAuthError(retryErr);
+            }
+          }
+        }
         throw this.wrapAuthError(err);
       }
     }
@@ -613,6 +715,16 @@ export class AnthropicProvider implements Provider {
                 type: 'image',
                 source: { type: 'base64', media_type: mediaType, data: part.data },
               });
+            } else if (part.type === 'document') {
+              // PDF document — send as native Anthropic document block
+              blocks.push({
+                type: 'document',
+                source: {
+                  type: 'base64',
+                  media_type: part.source.media_type,
+                  data: part.source.data,
+                },
+              } as unknown as TextBlockParam);
             } else if (part.type === 'image_url') {
               // Fallback: image_url parts should have been converted to base64
               // in agent-loop, but log a warning if we see one here

@@ -13,13 +13,13 @@
  * - Thread-bound persistence: session mode runs persist across restarts
  */
 
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type { AgentLoop } from '../core/agent-loop.js';
 import type { SessionManager, Session } from '../gateway/session.js';
 import type { AgentDescriptor } from './config.js';
+import { getRuntimePaths } from '../core/paths.js';
 
 /** Sub-agent run mode. */
 export type SubAgentMode = 'run' | 'session';
@@ -125,7 +125,7 @@ interface RunsFile {
 }
 
 function getRunsPath(): string {
-  return join(homedir(), '.tako', 'subagents', 'runs.json');
+  return join(getRuntimePaths().runtimeDir, 'subagents', 'runs.json');
 }
 
 export class SubAgentOrchestrator {

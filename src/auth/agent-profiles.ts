@@ -9,10 +9,10 @@
  *   3. Global auth (storage.ts / env vars)
  */
 
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { getRuntimePaths } from '../core/paths.js';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -32,7 +32,7 @@ export interface AuthProfilesFile {
 // ─── Paths ──────────────────────────────────────────────────────────
 
 function getProfilesPath(agentId: string): string {
-  return join(homedir(), '.tako', 'agents', agentId, 'agent', 'auth-profiles.json');
+  return join(getRuntimePaths().agentsDir, agentId, 'agent', 'auth-profiles.json');
 }
 
 // ─── Read / Write ───────────────────────────────────────────────────

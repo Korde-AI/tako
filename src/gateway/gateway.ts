@@ -11,7 +11,6 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 import type { GatewayConfig, HeartbeatConfig, SessionConfig, TakoConfig } from '../config/schema.js';
 import type { Channel, MessageHandler } from '../channels/channel.js';
 import type { ClientMessage, ServerMessage, GatewayEvent, EventHandler, SessionInfo } from './protocol.js';
@@ -26,6 +25,7 @@ import type { RetryQueue } from '../core/retry-queue.js';
 import { ProgressTracker } from '../core/progress.js';
 import type { Provider } from '../providers/provider.js';
 import { GatewayLock } from './lock.js';
+import { getRuntimePaths } from '../core/paths.js';
 
 interface ConnectedClient {
   id: string;
@@ -66,7 +66,7 @@ export class Gateway {
   constructor(config: GatewayConfig, deps: GatewayDeps) {
     this.config = config;
     this.deps = deps;
-    this.lock = new GatewayLock(join(homedir(), '.tako'));
+    this.lock = new GatewayLock(getRuntimePaths().runtimeDir);
 
     // Initialize heartbeat manager if config provided
     if (deps.heartbeatConfig && deps.workspaceRoot) {
@@ -140,9 +140,10 @@ export class Gateway {
     const acquired = await this.lock.acquire();
     if (!acquired) {
       const status = await this.lock.isLocked();
+      const owner = status.pid ? ` (PID ${status.pid})` : '';
       throw new Error(
-        `Another Tako daemon is already running (PID ${status.pid ?? 'unknown'}). ` +
-        `Use 'tako stop' to stop it first, or 'tako status' to check.`,
+        `Another Tako daemon is already running for home ${getRuntimePaths().home}${owner}. ` +
+        `Use 'tako stop' for that home before starting another instance, or choose a different --home.`,
       );
     }
 
@@ -545,7 +546,7 @@ export class Gateway {
    * 3) Exit current process with SIGTERM as a fallback and to flush state.
    */
   private scheduleRestart(note?: string, sessionKey?: string, channelId?: string, agentId?: string): void {
-    const restartFile = join(homedir(), '.tako', 'restart-note.json');
+    const restartFile = getRuntimePaths().restartNoteFile;
     const data = {
       note: note || 'Tako restarted.',
       sessionKey: sessionKey || null,

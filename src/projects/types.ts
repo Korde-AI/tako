@@ -2,6 +2,7 @@ export type ProjectStatus = 'active' | 'archived';
 export type ProjectRole = 'read' | 'contribute' | 'write' | 'admin';
 
 export interface ProjectCollaborationPolicy {
+  mode?: 'single-user' | 'collaborative';
   autoArtifactSync?: boolean;
   patchRequiresApproval?: boolean;
   announceJoins?: boolean;
@@ -38,6 +39,9 @@ export interface ProjectBinding {
   threadId?: string;
   agentId?: string;
   createdAt: string;
+  status?: 'active' | 'inactive';
+  deactivatedAt?: string;
+  deactivatedReason?: string;
 }
 
 export type ProjectArtifactScope = 'shared';
@@ -77,6 +81,12 @@ export interface ProjectBackgroundSnapshot {
   projectSlug?: string;
   generatedAt: string;
   reason: string;
+  memberCount: number;
+  members: Array<{
+    principalId: string;
+    displayName?: string;
+    role: ProjectRole;
+  }>;
   participantCount: number;
   participantIds: string[];
   activeParticipantIds: string[];
@@ -96,6 +106,7 @@ export interface ProjectBackgroundSnapshot {
     dirty?: boolean;
   }>;
   summary: string;
+  roomState?: 'active' | 'pending_rebind';
 }
 
 export interface ProjectPatchApproval {

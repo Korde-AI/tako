@@ -27,3 +27,9 @@ Thumbs.db
 workspace/
 tako-full-prompt.txt
 TASK.md
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd

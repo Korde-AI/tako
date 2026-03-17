@@ -10,7 +10,6 @@
 import { execSync, spawn, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { mkdirSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import type {
   SymphonyConfig,
   GitHubIssue,
@@ -22,6 +21,7 @@ import type {
 import { WorkspaceManager } from './workspace.js';
 import { WorkflowLoader, slugify } from './workflow.js';
 import type { WorkflowDefinition } from './types.js';
+import { expandHomePath, getRuntimeHome } from '../paths.js';
 
 const MAX_RETRY_ATTEMPTS = 3;
 
@@ -51,7 +51,7 @@ export class SymphonyOrchestrator {
       totalFailures: 0,
     };
 
-    const root = config.workspaceRoot ?? join(homedir(), '.tako', 'symphony-workspaces');
+    const root = config.workspaceRoot ?? join(getRuntimeHome(), 'symphony-workspaces');
     this.workspace = new WorkspaceManager(root, config.repo);
     this.workflowLoader = new WorkflowLoader();
 
@@ -69,7 +69,7 @@ export class SymphonyOrchestrator {
     });
 
     // Ensure history directory exists
-    this.historyDir = join(homedir(), '.tako', 'symphony', 'runs');
+    this.historyDir = join(getRuntimeHome(), 'symphony', 'runs');
     mkdirSync(this.historyDir, { recursive: true });
   }
 
@@ -114,7 +114,7 @@ export class SymphonyOrchestrator {
 
     const ws = wc.workspace as Record<string, unknown> | undefined;
     if (ws?.root) {
-      const root = (ws.root as string).replace('~', homedir());
+      const root = expandHomePath(ws.root as string);
       this.config.workspaceRoot = root;
       this.workspace = new WorkspaceManager(root, this.config.repo);
     }

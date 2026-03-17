@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { execSync, spawn } from 'node:child_process';
+import { getRuntimeHome, getRuntimeMode } from '../core/paths.js';
 
 const SERVICE_NAME = 'tako.service';
 
@@ -66,11 +67,12 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${takoBin} start
+ExecStart=${takoBin} ${getRuntimeMode() === 'hub' ? 'hub start' : 'start'} --home ${getRuntimeHome()}
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
 Environment=TAKO_KEEP_ALIVE=1
+Environment=TAKO_HOME=${getRuntimeHome()}
 WorkingDirectory=${homedir()}
 
 [Install]

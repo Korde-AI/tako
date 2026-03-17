@@ -11,9 +11,7 @@
  */
 
 import * as p from '@clack/prompts';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type { TakoConfig } from '../config/schema.js';
 import { resolveConfig } from '../config/resolve.js';
@@ -30,6 +28,7 @@ import {
   runOAuthFlow,
   OAUTH_PROVIDERS,
 } from '../auth/oauth.js';
+import { getRuntimePaths } from '../core/paths.js';
 
 const PROVIDER_MODELS: Record<string, { value: string; label: string; hint: string }[]> = {
   anthropic: [
@@ -74,7 +73,7 @@ const PROVIDER_AUTH_METHODS: Record<string, { value: string; label: string; hint
 // ─── Config file helpers ─────────────────────────────────────────────
 
 function getConfigPath(): string {
-  return join(homedir(), '.tako', 'tako.json');
+  return getRuntimePaths().configFile;
 }
 
 async function loadConfigFile(): Promise<Partial<TakoConfig>> {
@@ -86,6 +85,7 @@ async function loadConfigFile(): Promise<Partial<TakoConfig>> {
 
 async function saveConfigFile(config: Partial<TakoConfig>): Promise<void> {
   const configPath = getConfigPath();
+  await mkdir(getRuntimePaths().home, { recursive: true });
   await writeFile(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
 }
 
@@ -330,7 +330,7 @@ async function authLogin(providerName?: string): Promise<void> {
 
     if (result) {
       console.log(`\nOAuth authentication successful for ${providerName}!`);
-      console.log(`Token stored in ~/.tako/auth/${oauthKey}.json`);
+      console.log(`Token stored in ${getRuntimePaths().authDir}/${oauthKey}.json`);
     }
     return;
   }
@@ -350,7 +350,7 @@ async function authLogin(providerName?: string): Promise<void> {
       created_at: Date.now(),
     };
     await writeAuthCredential(credential);
-    console.log('\nSetup token stored in ~/.tako/auth/anthropic.json');
+    console.log(`\nSetup token stored in ${getRuntimePaths().authDir}/anthropic.json`);
     return;
   }
 
@@ -360,7 +360,7 @@ async function authLogin(providerName?: string): Promise<void> {
   if (process.env[envVar]) {
     console.log(`${envVar} is already set in your environment.`);
     const replace = await p.confirm({
-      message: 'Replace it in ~/.tako/auth/?',
+      message: `Replace it in ${getRuntimePaths().authDir}/?`,
       initialValue: false,
     });
     if (p.isCancel(replace) || !replace) return;
@@ -382,8 +382,7 @@ async function authLogin(providerName?: string): Promise<void> {
   await writeAuthCredential(credential);
 
   // Also save to .env for backward compat
-  const takoDir = join(homedir(), '.tako');
-  const envPath = join(takoDir, '.env');
+  const envPath = getRuntimePaths().envFile;
   let envContent = '';
   if (existsSync(envPath)) {
     envContent = await readFile(envPath, 'utf-8');
@@ -396,9 +395,10 @@ async function authLogin(providerName?: string): Promise<void> {
   } else {
     envContent = envContent ? envContent.trimEnd() + '\n' + envLine + '\n' : envLine + '\n';
   }
+  await mkdir(getRuntimePaths().home, { recursive: true });
   await writeFile(envPath, envContent, 'utf-8');
 
-  console.log(`\nAPI key saved to ~/.tako/auth/${providerName}.json and ~/.tako/.env`);
+  console.log(`\nAPI key saved to ${getRuntimePaths().authDir}/${providerName}.json and ${envPath}`);
 }
 
 // ─── Auth logout ─────────────────────────────────────────────────────

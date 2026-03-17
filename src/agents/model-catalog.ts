@@ -8,10 +8,10 @@
  * Refresh on demand via `tako models --refresh`.
  */
 
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { getRuntimePaths } from '../core/paths.js';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -37,7 +37,7 @@ export interface ModelCatalog {
 // ─── Paths ──────────────────────────────────────────────────────────
 
 function getCatalogPath(agentId: string): string {
-  return join(homedir(), '.tako', 'agents', agentId, 'agent', 'models.json');
+  return join(getRuntimePaths().agentsDir, agentId, 'agent', 'models.json');
 }
 
 // ─── Read / Write ───────────────────────────────────────────────────

@@ -1,140 +1,81 @@
-# Channels
+# Channel Setup — Getting Your Bot Tokens
 
-Channels are messaging I/O adapters that connect Tako to different platforms. Multiple channels run simultaneously.
+Tako connects to Discord and Telegram through bot tokens. This guide explains how to get those tokens. Once you have them, just run `tako onboard` and paste them in when prompted.
 
-## CLI (Built-in)
+---
 
-Terminal readline interface. Always active.
+## Discord
 
-**Configuration:**
-```json
-{
-  "channels": {
-    "cli": {
-      "prompt": "tako> "
-    }
-  }
-}
-```
+### Step 1 — Create a Discord application
 
-**Features:**
-- Streaming output (chunks written to stdout in real-time)
-- `/quit` and `/exit` commands to stop
-- Serialized message handling (no overlapping executions)
+1. Go to [https://discord.com/developers/applications](https://discord.com/developers/applications)
+2. Click **New Application** → give it a name (e.g. `Tako`)
+3. Go to the **Bot** tab → click **Add Bot**
+4. Under **Token**, click **Reset Token** → **copy it** (you'll need this in `tako onboard`)
 
-## TUI (Built-in)
+### Step 2 — Enable required intents
 
-Terminal UI built with Ink/React. Attach to a running daemon or run standalone.
+Still on the **Bot** tab, scroll down to **Privileged Gateway Intents** and enable:
 
-**Launch:**
+- ✅ `MESSAGE CONTENT INTENT` — required to read messages
+- ✅ `SERVER MEMBERS INTENT` — optional, for member info
+
+### Step 3 — Invite the bot to your server
+
+1. Go to **OAuth2 → URL Generator**
+2. Under **Scopes**, check: `bot` and `applications.commands`
+3. Under **Bot Permissions**, check:
+   - Send Messages
+   - Read Messages / View Channels
+   - Read Message History
+   - Add Reactions
+   - Attach Files
+   - Embed Links
+   - Create Public Threads
+   - Send Messages in Threads
+   - Manage Channels
+   - Use Slash Commands
+4. Copy the generated URL → open it in your browser → select your server → **Authorize**
+
+### Step 4 — Run onboarding
+
 ```bash
-tako tui          # Attach to running daemon
+tako onboard
 ```
 
-**Features:**
-- Real-time streaming output
-- Image attachment support
-- Tab-completion for commands
-- Active agent display in header
-- Bot name masking for privacy
+When prompted for a Discord bot token, paste the token you copied in Step 1.
 
-## Discord (Built-in)
+---
 
-Discord bot via discord.js.
+## Telegram
 
-**Configuration:**
-```json
-{
-  "channels": {
-    "discord": {
-      "token": "your-bot-token",
-      "guilds": ["guild-id-1", "guild-id-2"]
-    }
-  }
-}
+### Step 1 — Create a bot with BotFather
+
+1. Open Telegram and search for **@BotFather**
+2. Send `/newbot`
+3. Follow the prompts — choose a name and username for your bot
+4. BotFather will reply with your bot token — **copy it**
+
+### Step 2 — Find your Telegram user ID (for access control)
+
+Message **[@userinfobot](https://t.me/userinfobot)** on Telegram. It will reply with your numeric user ID. Keep this handy — `tako onboard` will ask for it to lock the bot to your account.
+
+### Step 3 — Run onboarding
+
+```bash
+tako onboard
 ```
 
-**Features:**
-- Auto-create threads for replies (reference runtime-style)
-- DM support (via Partials.Channel + Partials.Message)
-- Typing indicators (configurable via `agent.typingMode`)
-- Automatic message splitting (Discord's 2000 char limit)
-- Auto-reconnect with exponential backoff (up to 5 attempts)
-- Guild filtering (optional — respond only in specific servers)
-- Attachment extraction (images, files)
-- Sender name shown in messages: `[From: name]`
+When prompted for a Telegram bot token, paste the token from Step 1.
 
-**Setup:**
-1. Create a bot at [Discord Developer Portal](https://discord.com/developers/applications)
-2. Enable Message Content Intent
-3. Invite bot to your server with message permissions
-4. Set the token via `tako onboard` or `tako channels`
+---
 
-## Telegram (Built-in)
+## Multiple agents
 
-Telegram bot via grammY.
+Each agent (e.g. `code-agent`, `project-manager`) can have its own Discord bot. Just create a separate Discord application for each one and configure them via:
 
-**Configuration:**
-```json
-{
-  "channels": {
-    "telegram": {
-      "token": "your-bot-token",
-      "allowedUsers": ["username1", "username2"]
-    }
-  }
-}
+```
+/setup
 ```
 
-**Features:**
-- Long polling (non-blocking)
-- Typing indicators (configurable via `agent.typingMode`)
-- Reactions support
-- Markdown formatting with fallback to plain text
-- Max 4096 chars per message (Telegram limit)
-- User filtering (optional — respond only to specific users)
-- Supports photos, documents, audio, video attachments
-- Sender name shown in messages: `[From: name]`
-
-**Setup:**
-1. Create a bot via [@BotFather](https://t.me/BotFather)
-2. Get the token
-3. Set via `tako onboard` or `tako channels`
-
-## Custom Channels
-
-Implement the `Channel` interface in `src/channels/channel.ts`:
-
-```typescript
-import type { Channel, OutboundMessage, MessageHandler, InboundMessage } from './channel.js';
-
-export class MyChannel implements Channel {
-  id = 'my-channel';
-  private handler?: MessageHandler;
-
-  async connect(): Promise<void> {
-    // Connect to your platform
-  }
-
-  async disconnect(): Promise<void> {
-    // Clean up
-  }
-
-  async send(msg: OutboundMessage): Promise<void> {
-    // Send message to your platform
-  }
-
-  onMessage(handler: MessageHandler): void {
-    this.handler = handler;
-  }
-}
-```
-
-## Multi-Channel Routing
-
-When multiple channels are active, Tako routes messages independently:
-
-- Each channel + author pair gets its own session
-- Sessions are keyed by `channelId:authorId`
-- The agent loop runs per-message, streaming output back through the originating channel
-- CLI streams to stdout; other channels send the complete response
+in Discord after Tako is running. See **[agent use cases in the README](../README.md#creating-agents)** for details.

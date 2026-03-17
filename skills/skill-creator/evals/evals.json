@@ -1,0 +1,23 @@
+{
+  "skill_name": "skill-creator",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I want to create a new skill that helps with writing commit messages from git diffs",
+      "expected_output": "A SKILL.md is created with correct frontmatter, clear instructions, and test cases are proposed",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Can you optimize the description for my existing research-helper skill so it triggers more reliably?",
+      "expected_output": "Description optimization loop is run using run_loop.py and a better description is produced",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Run evals on the skill I just wrote and show me the results in the viewer",
+      "expected_output": "Test prompts are executed, benchmark is aggregated, and generate_review.py opens the viewer",
+      "files": []
+    }
+  ]
+}
