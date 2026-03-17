@@ -61,14 +61,17 @@ export class AnthropicProvider implements Provider {
   private authResolved = false;
   /** When set, the resolved auth is a Bearer token (setup_token / oauth), not an API key. */
   private bearerToken: string | null = null;
+  /** Custom base URL (e.g. OpenClaw gateway proxy). */
+  private baseUrl: string | undefined;
   /** Cumulative cache usage stats. */
   private cacheStats: CacheStats = { cacheCreationTokens: 0, cacheReadTokens: 0, cacheHits: 0, cacheMisses: 0 };
   /** Prompt cache manager for standalone cache stat tracking. */
   private promptCacheManager: PromptCacheManager;
 
-  constructor(apiKey?: string, cacheConfig?: Partial<PromptCacheConfig>) {
+  constructor(apiKey?: string, cacheConfig?: Partial<PromptCacheConfig>, baseUrl?: string) {
     this.apiKeys = this.resolveApiKeys(apiKey);
     this.promptCacheManager = new PromptCacheManager(cacheConfig);
+    this.baseUrl = baseUrl;
   }
 
   /** Get cumulative prompt cache statistics. */
@@ -237,10 +240,21 @@ export class AnthropicProvider implements Provider {
   }
 
   private createClient(apiKey: string): Anthropic {
+    // If a baseUrl is configured (e.g. OpenClaw gateway proxy), route ALL requests through it.
+    // The proxy handles OAuth token refresh and auth internally.
+    if (this.baseUrl) {
+      console.log(`[anthropic] Using proxy: ${this.baseUrl}`);
+      return new Anthropic({
+        apiKey,
+        baseURL: this.baseUrl,
+        defaultHeaders: {
+          'Authorization': `Bearer ${apiKey}`,
+        },
+      });
+    }
+
     if (this.isOAuthToken(apiKey)) {
       // OAuth/setup tokens use Bearer auth with Claude Code identity headers.
-      // This matches exactly how @mariozechner/pi-ai providers/anthropic.js
-      // handles these tokens in reference runtime.
       return new Anthropic({
         apiKey: null as unknown as string,
         authToken: apiKey,

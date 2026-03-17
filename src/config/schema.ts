@@ -163,6 +163,8 @@ export interface ProvidersConfig {
   overrides?: Record<string, Record<string, unknown>>;
   /** LiteLLM-specific config */
   litellm?: LiteLLMConfig;
+  /** Anthropic-specific config (baseUrl for proxy, apiKey override) */
+  anthropic?: { baseUrl?: string; apiKey?: string; model?: string };
   /** Cooldown duration in seconds after a provider fails (default: 60) */
   cooldownSeconds?: number;
   /**

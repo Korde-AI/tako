@@ -1232,7 +1232,7 @@ async function runStart(): Promise<void> {
   let resolvedProviderLabel = config.providers.primary;
   switch (providerName) {
     case 'anthropic':
-      provider = new AnthropicProvider();
+      provider = new AnthropicProvider(undefined, undefined, config.providers.anthropic?.baseUrl);
       break;
     case 'openai':
       provider = new OpenAIProvider();
@@ -1245,12 +1245,12 @@ async function runStart(): Promise<void> {
         console.error('[litellm]   Your primary model is litellm/* but no baseUrl is set.');
         console.error('[litellm]   Run `tako onboard` and configure LiteLLM, or switch provider.');
         console.error('[litellm]   Falling back to Anthropic provider.');
-        provider = new AnthropicProvider();
+        provider = new AnthropicProvider(undefined, undefined, config.providers.anthropic?.baseUrl);
         resolvedProviderLabel = `anthropic (fallback — litellm misconfigured)`;
       }
       break;
     default:
-      provider = new AnthropicProvider();
+      provider = new AnthropicProvider(undefined, undefined, config.providers.anthropic?.baseUrl);
       resolvedProviderLabel = `anthropic (fallback — unknown provider '${providerName}')`;
   }
 
@@ -1265,7 +1265,7 @@ async function runStart(): Promise<void> {
     if (!providerMap.has(pid)) {
       switch (pid) {
         case 'anthropic':
-          providerMap.set(pid, new AnthropicProvider());
+          providerMap.set(pid, new AnthropicProvider(undefined, undefined, config.providers.anthropic?.baseUrl));
           break;
         case 'openai':
           providerMap.set(pid, new OpenAIProvider());
@@ -2802,7 +2802,7 @@ async function runStart(): Promise<void> {
       const providerModelsMap: Record<string, string[]> = {};
 
       // Anthropic models (always available)
-      const anthropicProvider = new AnthropicProvider();
+      const anthropicProvider = new AnthropicProvider(undefined, undefined, config.providers.anthropic?.baseUrl);
       providerModelsMap['anthropic'] = anthropicProvider.models().map((m) => m.id);
 
       // OpenAI models (always available)
