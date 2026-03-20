@@ -11,12 +11,20 @@ export function defaultProjectWorkspaceRoot(paths: TakoPaths, projectId: string)
   return joinNormalized(getProjectHome(paths, projectId), 'workspace');
 }
 
+export function defaultProjectWorkspaceRootBySlug(workspaceRoot: string, projectSlug: string): string {
+  return joinNormalized(workspaceRoot, 'projects', projectSlug);
+}
+
 export function defaultProjectArtifactsRoot(paths: TakoPaths, projectId: string): string {
   return joinNormalized(getProjectHome(paths, projectId), 'artifacts', 'shared');
 }
 
 export function defaultProjectWorktreeRoot(paths: TakoPaths, projectId: string, nodeId: string): string {
   return joinNormalized(getProjectHome(paths, projectId), 'worktrees', nodeId);
+}
+
+export function defaultProjectWorktreeRootForProject(project: Project, paths: TakoPaths, nodeId: string): string {
+  return joinNormalized(resolveProjectRoot(paths, project), 'worktrees', nodeId);
 }
 
 export function projectCoordinationRoot(paths: TakoPaths, projectId: string): string {

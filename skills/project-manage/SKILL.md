@@ -39,3 +39,10 @@ Use this when the project already exists and the task is administrative.
 - Done
 - Blockers
 - Next Actions
+
+## Local path defaults
+
+- When a project needs a local workspace or worktree on an agent, default to the agent workspace under:
+  - `projects/<project-slug>`
+- Do not ask the user for a local repo path unless they explicitly want a custom path.
+- For ordinary project sync requests, assume the default project-local path and use project tools first.

@@ -132,7 +132,7 @@ export function createProjectTools(deps: ProjectToolDeps): Tool[] {
 
   const projectSync: Tool = {
     name: 'project_sync',
-    description: 'Sync shared project state for the current project. Use this to rebuild the project background, announce a concise progress update, and optionally append an update note into STATUS.md.',
+    description: 'Sync shared project state for the current project. Use this when the user says things like "sync the progress", "sync your work tree", "sync this project", or "sync to other participants". This rebuilds the project background, ensures the local project workspace/worktree exists under the agent workspace, announces a concise update, and can append an update note into STATUS.md.',
     parameters: {
       type: 'object',
       properties: {

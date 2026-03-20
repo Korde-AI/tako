@@ -14,7 +14,7 @@ import { ProjectMembershipRegistry } from '../projects/memberships.js';
 import { applyPatchToWorktree, createPatchFromWorktree, getWorktreeRepoStatus } from '../projects/patches.js';
 import {
   defaultProjectArtifactsRoot,
-  defaultProjectWorktreeRoot,
+  defaultProjectWorktreeRootForProject,
   getProjectHome,
   projectApprovalsRoot,
   projectBackgroundRoot,
@@ -401,13 +401,15 @@ export async function runProjects(args: string[]): Promise<void> {
     }
     case 'worktree-register': {
       const projectId = resolveProjectId(projects, args[1]);
+      const project = projects.get(projectId);
+      if (!project) throw new Error(`Project not found: ${projectId}`);
       const nodeId = readFlag(args, '--node') ?? (await readNodeIdentity())?.nodeId;
       const ownerPrincipalId = readFlag(args, '--owner');
       const label = readFlag(args, '--label');
       if (!nodeId) {
         throw new Error('Usage: tako projects worktree-register <projectId|slug> [--node <nodeId>] [--root <path>] [--owner <principalId>] [--label <label>]');
       }
-      const requestedRoot = readFlag(args, '--root') ?? defaultProjectWorktreeRoot(getRuntimePaths(), projectId, nodeId);
+      const requestedRoot = readFlag(args, '--root') ?? defaultProjectWorktreeRootForProject(project, getRuntimePaths(), nodeId);
       const worktrees = new ProjectWorktreeRegistry(projectWorktreesDir(projectId), projectId);
       await worktrees.load();
       const worktree = await worktrees.register({ nodeId, root: requestedRoot, ownerPrincipalId, label });

@@ -12,7 +12,7 @@ import { requireProjectRole } from '../projects/access.js';
 import { ProjectRegistry } from '../projects/registry.js';
 import type { ProjectRole } from '../projects/types.js';
 import { bootstrapProjectHome } from '../projects/bootstrap.js';
-import { defaultProjectWorktreeRoot, resolveProjectRoot } from '../projects/root.js';
+import { defaultProjectWorkspaceRootBySlug, defaultProjectWorktreeRootForProject, resolveProjectRoot } from '../projects/root.js';
 import { ProjectWorktreeRegistry } from '../projects/worktrees.js';
 import { compareAuthorityRoles, isRoleWithinAuthorityCeiling, isValidAuthorityCeiling } from '../network/authority.js';
 import { InviteStore, type ProjectInvite } from '../network/invites.js';
@@ -106,6 +106,7 @@ async function ensureAcceptedProjectWorkspace(input: {
     slug: input.invite.projectSlug,
     displayName: input.invite.projectSlug,
     ownerPrincipalId: input.invite.issuedByPrincipalId,
+    workspaceRoot: defaultProjectWorkspaceRootBySlug(paths.workspaceDir, input.invite.projectSlug),
     status: 'active',
     collaboration: {
       mode: 'collaborative',
@@ -124,7 +125,7 @@ async function ensureAcceptedProjectWorkspace(input: {
 
   await bootstrapProjectHome(paths.projectsDir, imported);
   const projectRoot = resolveProjectRoot(paths, imported);
-  const worktreeRoot = defaultProjectWorktreeRoot(paths, imported.projectId, identity.nodeId);
+  const worktreeRoot = defaultProjectWorktreeRootForProject(imported, paths, identity.nodeId);
   const worktrees = new ProjectWorktreeRegistry(join(paths.projectsDir, imported.projectId, 'worktrees'), imported.projectId);
   await worktrees.load();
   await worktrees.register({

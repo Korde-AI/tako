@@ -17,7 +17,12 @@ A single-user project should not behave as a collaborative room.
 1. Confirm the project has multiple members.
 2. Read current project state and `STATUS.md`.
 3. Summarize progress before proposing new work.
-4. When asked to sync, decide whether `project_sync` is the right tool, update shared project docs first, then announce a concise summary.
+4. When asked to sync, especially with phrases like:
+   - `sync your work tree`
+   - `sync this project`
+   - `sync the progress`
+   - `sync to other participants`
+   use `project_sync`, not generic git or shell sync logic, unless the user explicitly asks for a raw git operation.
 5. When roles or communication are unclear, state:
    - current members
    - current mode
@@ -26,6 +31,7 @@ A single-user project should not behave as a collaborative room.
 ## Coordination rules
 
 - Prefer project state, membership, and network session flows.
+- Treat project sync as project/workspace synchronization by default. The local mirror path should default to the agent workspace under `projects/<project-slug>`.
 - Do not rely on bot-to-bot Discord mentions for real agent coordination.
 - Keep shared updates in project files and room announcements.
 - Do not call sync tools for ordinary chat unless the user is actually asking to synchronize or persist project state.

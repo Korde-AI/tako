@@ -147,7 +147,8 @@ import type { ProjectRole, Project } from './projects/types.js';
 import { bootstrapProjectHome } from './projects/bootstrap.js';
 import {
   defaultProjectArtifactsRoot,
-  defaultProjectWorktreeRoot,
+  defaultProjectWorkspaceRootBySlug,
+  defaultProjectWorktreeRootForProject,
   projectApprovalsRoot,
   projectBackgroundRoot,
   projectBranchesRoot,
@@ -764,7 +765,7 @@ async function runStart(): Promise<void> {
   }): Promise<{ projectRoot: string; worktreeRoot: string; created: boolean }> => {
     await bootstrapProjectHome(runtimePaths.projectsDir, input.project);
     const projectRoot = resolveProjectRoot(runtimePaths, input.project);
-    const worktreeRoot = defaultProjectWorktreeRoot(runtimePaths, input.project.projectId, getNodeIdentity().nodeId);
+    const worktreeRoot = defaultProjectWorktreeRootForProject(input.project, runtimePaths, getNodeIdentity().nodeId);
     const worktrees = new ProjectWorktreeRegistry(join(runtimePaths.projectsDir, input.project.projectId, 'worktrees'), input.project.projectId);
     await worktrees.load();
     const existingWorktree = worktrees.findByNode(getNodeIdentity().nodeId);
@@ -1276,6 +1277,7 @@ async function runStart(): Promise<void> {
       slug: input.invite.projectSlug,
       displayName: projectDisplayName,
       ownerPrincipalId: input.invite.issuedByPrincipalId,
+      workspaceRoot: defaultProjectWorkspaceRootBySlug(config.memory.workspace, input.invite.projectSlug),
       status: 'active',
       collaboration: {
         mode: 'collaborative',
@@ -2151,6 +2153,7 @@ async function runStart(): Promise<void> {
       slug,
       displayName,
       ownerPrincipalId: executionContext.principalId,
+      workspaceRoot: defaultProjectWorkspaceRootBySlug(config.memory.workspace, slug),
       description,
       collaboration: {
         mode: 'single-user',
