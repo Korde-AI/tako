@@ -99,6 +99,9 @@ That means:
 
 ## Quick start
 
+For the simplest server + Discord setup, start here:
+- [Server Discord Quick Start](docs/server-discord-quickstart.md)
+
 ### From source
 
 ```bash
