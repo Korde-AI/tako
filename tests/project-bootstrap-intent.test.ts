@@ -18,6 +18,13 @@ describe('project bootstrap intent', () => {
     expect(intent.projectType).toBe('general');
   });
 
+  test('defaults generic project space requests to the current room', () => {
+    const intent = inferProjectBootstrapIntent('create a local space for the SkillTree project and sync the basic statement');
+    expect(intent.shouldHandle).toBe(true);
+    expect(intent.destination).toBe('here');
+    expect(intent.slug).toBe('the-skilltree-project');
+  });
+
   test('ignores normal chat', () => {
     const intent = inferProjectBootstrapIntent('hey can you summarize the last patch?');
     expect(intent.shouldHandle).toBe(false);

@@ -23,6 +23,7 @@ Use this when the user asks to create or open a project.
 - New project channels should be private to the requester by default.
 - If the user says `thread`, prefer a thread.
 - If the user says `here` or `this channel`, bind the current room.
+- If the user asks for a project space, workspace, or local project setup without explicitly saying `channel` or `thread`, bind the current room by default. Do not silently open a new thread.
 - Do not ask for Guild ID if the current Discord guild context exists.
 - Prefer `project_bootstrap` over the generic `message` tool for real project bootstrap actions.
 - Use tools only when the request actually requires state changes. Do not force a tool call for normal discussion.

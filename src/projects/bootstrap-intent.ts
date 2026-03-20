@@ -105,7 +105,7 @@ export function inferProjectBootstrapIntent(text: string): ProjectBootstrapInten
       ? 'channel'
       : wantsThread
         ? 'thread'
-        : 'thread';
+        : 'here';
 
   return {
     shouldHandle,
