@@ -1125,6 +1125,7 @@ async function runStart(): Promise<void> {
       offeredRole: ProjectRole;
       metadata?: Record<string, unknown>;
     };
+    executionContext?: ExecutionContext;
   }): Promise<{ projectId: string; projectRoot: string; worktreeRoot: string }> => {
     const inviteMetadata = input.invite.metadata ?? {};
     const projectDisplayName = typeof inviteMetadata['projectDisplayName'] === 'string'
@@ -1169,6 +1170,30 @@ async function runStart(): Promise<void> {
         hostNodeId: input.invite.hostNodeId,
       },
     });
+
+    const acceptedCtx = input.executionContext;
+    if (acceptedCtx?.platform === 'discord' && acceptedCtx.agentId) {
+      const bindChannelTarget = acceptedCtx.threadId
+        ? (acceptedCtx.metadata?.['parentChannelId'] as string | undefined) ?? acceptedCtx.channelTarget
+        : acceptedCtx.channelTarget;
+      if (bindChannelTarget) {
+        const existingBinding = projectBindings.resolve({
+          platform: 'discord',
+          channelTarget: bindChannelTarget,
+          threadId: acceptedCtx.threadId,
+          agentId: acceptedCtx.agentId,
+        });
+        if (!existingBinding || existingBinding.projectId !== imported.projectId) {
+          await projectBindings.bind({
+            projectId: imported.projectId,
+            platform: 'discord',
+            channelTarget: bindChannelTarget,
+            threadId: acceptedCtx.threadId,
+            agentId: acceptedCtx.agentId,
+          });
+        }
+      }
+    }
 
     const projectDocPath = join(projectRoot, 'PROJECT.md');
     const statusPath = join(projectRoot, 'STATUS.md');
@@ -1272,9 +1297,14 @@ async function runStart(): Promise<void> {
       };
     }
 
+    const ownerAllowed = await isUserAllowed('discord', input.agentId, input.authorId, input.principalId);
+    if (ownerAllowed) {
+      return { allowed: true, reason: 'unbound_owner' };
+    }
+
     return {
-      allowed: policy.ignoreUnboundChannels !== false ? false : true,
-      reason: policy.ignoreUnboundChannels !== false ? 'unbound_channel_ignored' : 'unbound_channel_allowed',
+      allowed: true,
+      reason: 'unbound_shared_readonly',
     };
   };
 
@@ -1697,7 +1727,12 @@ async function runStart(): Promise<void> {
       threadId,
       agentId: executionContext.agentId,
     });
-    const project = binding ? projectRegistry.get(binding.projectId) : null;
+    const project = binding
+      ? projectRegistry.get(binding.projectId)
+      : resolveProjectForToolContext({
+          executionContext,
+          sessionId: ctx.sessionId,
+        });
     const membershipLines = project
       ? projectMemberships.listByProject(project.projectId).map((membership) => {
           const principal = principalRegistry.get(membership.principalId);
@@ -1915,7 +1950,16 @@ async function runStart(): Promise<void> {
       }
       const trust = await trusts.markTrusted(invite.hostNodeId, desiredCeiling);
       await invites.markAccepted(invite.inviteId);
-      const localProject = await ensureAcceptedProjectWorkspaceAtRuntime({ invite });
+      const localProject = await ensureAcceptedProjectWorkspaceAtRuntime({
+        invite,
+        executionContext,
+      });
+      const session = ctx.sessionId ? sessions.get(ctx.sessionId) : undefined;
+      if (session) {
+        session.metadata.recentProjectId = invite.projectId;
+        session.metadata.recentProjectSlug = invite.projectSlug;
+        sessions.markSessionDirty(session.id);
+      }
       const sharedDocNames = Object.keys((invite.metadata?.['sharedDocs'] as Record<string, string> | undefined) ?? {});
       return {
         output: [
