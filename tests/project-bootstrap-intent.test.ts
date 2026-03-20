@@ -8,12 +8,14 @@ describe('project bootstrap intent', () => {
     expect(intent.displayName).toBe('OttoOS');
     expect(intent.slug).toBe('ottoos');
     expect(intent.destination).toBe('channel');
+    expect(intent.projectType).toBe('programming');
   });
 
   test('detects bind-here language', () => {
     const intent = inferProjectBootstrapIntent('create a project for release planning and use this channel for the collaboration room');
     expect(intent.shouldHandle).toBe(true);
     expect(intent.destination).toBe('here');
+    expect(intent.projectType).toBe('general');
   });
 
   test('ignores normal chat', () => {
@@ -24,5 +26,10 @@ describe('project bootstrap intent', () => {
   test('does not retrigger on follow-up question about prior bootstrap action', () => {
     const intent = inferProjectBootstrapIntent('why you open a thread rather than a channel ?');
     expect(intent.shouldHandle).toBe(false);
+  });
+
+  test('infers design and research project types', () => {
+    expect(inferProjectBootstrapIntent('create a new project for the product design mockups').projectType).toBe('design');
+    expect(inferProjectBootstrapIntent('start a research project for paper analysis').projectType).toBe('research');
   });
 });

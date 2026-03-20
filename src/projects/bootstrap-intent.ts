@@ -1,6 +1,7 @@
 export interface ProjectBootstrapIntent {
   shouldHandle: boolean;
   destination: 'channel' | 'thread' | 'here';
+  projectType: 'programming' | 'design' | 'research' | 'general';
   displayName: string;
   slug: string;
   description: string;
@@ -65,6 +66,20 @@ function inferDescription(text: string, displayName: string): string {
   return `Collaborative workspace for ${displayName}.`;
 }
 
+function inferProjectType(text: string): ProjectBootstrapIntent['projectType'] {
+  const normalized = normalizeWhitespace(text.toLowerCase());
+  if (/\b(research|paper|literature|experiment|study|analysis|dataset)\b/.test(normalized)) {
+    return 'research';
+  }
+  if (/\b(design|figma|ux|ui|brand|visual|prototype|mockup)\b/.test(normalized)) {
+    return 'design';
+  }
+  if (/\b(code|coding|program|programming|repo|github|build|app|feature|bug|engineer|software)\b/.test(normalized)) {
+    return 'programming';
+  }
+  return 'general';
+}
+
 export function inferProjectBootstrapIntent(text: string): ProjectBootstrapIntent {
   const normalized = normalizeWhitespace(text.toLowerCase());
   const isQuestion = /^(why|what|how|when|where|who)\b/.test(normalized)
@@ -95,6 +110,7 @@ export function inferProjectBootstrapIntent(text: string): ProjectBootstrapInten
   return {
     shouldHandle,
     destination,
+    projectType: inferProjectType(text),
     displayName,
     slug,
     description,

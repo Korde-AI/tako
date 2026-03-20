@@ -1142,6 +1142,7 @@ async function runStart(): Promise<void> {
     const destination = input.destination && input.destination !== 'auto'
       ? input.destination
       : intent.destination;
+    const projectType = intent.projectType;
     const displayName = input.displayName?.trim() || intent.displayName;
     const slug = input.slug?.trim() || intent.slug;
     const description = input.description?.trim() || intent.description;
@@ -1175,6 +1176,7 @@ async function runStart(): Promise<void> {
       metadata: {
         createdFrom: 'discord-tool-bootstrap',
         requestedInChannel: executionContext.channelId,
+        projectType,
       },
     });
     if (!existing) {
@@ -1254,17 +1256,52 @@ async function runStart(): Promise<void> {
 
     const statusPath = join(projectRoot, 'STATUS.md');
     const projectDocPath = join(projectRoot, 'PROJECT.md');
+    const noticePath = join(projectRoot, 'NOTICE.md');
     const modeLabel = project.collaboration?.mode ?? 'single-user';
+    const templateSectionsByType: Record<string, string[]> = {
+      programming: [
+        '## Engineering Focus',
+        '- Repo / codebase',
+        '- Milestone tasks',
+        '- Bugs / blockers',
+        '- Review and merge plan',
+      ],
+      design: [
+        '## Design Focus',
+        '- Product goals',
+        '- User flows',
+        '- Screens / assets',
+        '- Review checkpoints',
+      ],
+      research: [
+        '## Research Focus',
+        '- Research question',
+        '- Sources / papers',
+        '- Findings',
+        '- Open questions',
+      ],
+      general: [
+        '## Project Focus',
+        '- Goal',
+        '- Workstreams',
+        '- Risks',
+        '- Next review',
+      ],
+    };
+    const templateSection = templateSectionsByType[projectType] ?? templateSectionsByType.general;
     if (!existsSync(projectDocPath)) {
       const projectDoc = [
         `# ${project.displayName}`,
         '',
         `- Slug: \`${project.slug}\``,
+        `- Type: \`${projectType}\``,
         `- Owner principal: \`${project.ownerPrincipalId}\``,
         `- Mode: \`${modeLabel}\``,
         project.description ? '' : null,
         project.description ? '## Description' : null,
         project.description ?? null,
+        '',
+        ...templateSection,
       ].filter(Boolean).join('\n');
       await writeFile(projectDocPath, `${projectDoc}\n`, 'utf-8');
     }
@@ -1273,6 +1310,7 @@ async function runStart(): Promise<void> {
         `# STATUS`,
         '',
         `Project: ${project.displayName} (\`${project.slug}\`)`,
+        `Type: ${projectType}`,
         `Mode: ${modeLabel}`,
         '',
         '## Current Goal',
@@ -1290,8 +1328,23 @@ async function runStart(): Promise<void> {
         '## Next Actions',
         '- Add collaborators if needed.',
         '- Update this file as work progresses.',
+        '',
+        ...templateSection,
       ].join('\n');
       await writeFile(statusPath, `${statusDoc}\n`, 'utf-8');
+    }
+    if (!existsSync(noticePath)) {
+      const noticeDoc = [
+        `# Notice`,
+        '',
+        `${project.displayName} was initialized as a private ${projectType} project room.`,
+        `This room starts in \`${modeLabel}\` mode and becomes collaborative after another member is added.`,
+        '',
+        '## Workspace',
+        `- Local workspace: \`${projectRoot}\``,
+        '- Shared starter docs: `PROJECT.md`, `STATUS.md`',
+      ].join('\n');
+      await writeFile(noticePath, `${noticeDoc}\n`, 'utf-8');
     }
 
     const background = await buildProjectBackground(project.projectId, existing ? 'discord_tool_rebind' : 'discord_tool_bootstrap');
@@ -1305,7 +1358,17 @@ async function runStart(): Promise<void> {
         target: createdThread?.id ?? createdChannel!.id,
         content: [
           `Project room initialized for **${project.displayName}**.`,
-          background?.summary ?? description,
+          `Type: \`${projectType}\``,
+          `Mode: \`${modeLabel}\``,
+          `Workspace: \`${projectRoot}\``,
+          `Starter docs created: \`PROJECT.md\`, \`STATUS.md\`, \`NOTICE.md\``,
+          '',
+          'This room is private to the owner until another member is added.',
+          '',
+          'Intro:',
+          project.description || description,
+          '',
+          background?.summary ?? '',
         ].join('\n\n'),
       }).catch(() => {});
     }
@@ -1316,6 +1379,9 @@ async function runStart(): Promise<void> {
         createdChannel ? `Opened channel: ${createdChannel.id}` : null,
         createdThread ? `Opened thread: ${createdThread.id}` : null,
         !createdChannel && !createdThread ? (boundThreadId ? `Bound current thread: ${boundThreadId}` : 'Bound current channel.') : null,
+        `Type: ${projectType}`,
+        `Workspace: ${projectRoot}`,
+        'Starter docs: PROJECT.md, STATUS.md, NOTICE.md',
         background ? `Background: ${background.summary.split('\n')[0]}` : null,
       ].filter(Boolean).join('\n'),
       success: true,
