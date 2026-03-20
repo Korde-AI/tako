@@ -123,7 +123,7 @@ import { CacheManager } from './cache/manager.js';
 import { setFsCacheManager } from './tools/fs.js';
 import { setExecCacheManager } from './tools/exec.js';
 import { setImageProvider } from './tools/image.js';
-import { createProjectTools, type ProjectBootstrapRequest, type ProjectMemberManageRequest, type ProjectSyncRequest } from './tools/projects.js';
+import { createProjectTools, type ProjectBootstrapRequest, type ProjectMemberManageRequest, type ProjectSyncRequest, type ProjectCloseRequest } from './tools/projects.js';
 import { runSymphony } from './cli/symphony.js';
 import { ExtensionRegistry } from './skills/extension-registry.js';
 import { loadExtension, getSkillsWithExtension } from './skills/extension-loader.js';
@@ -1120,6 +1120,82 @@ async function runStart(): Promise<void> {
     };
   };
 
+  const closeDiscordProjectFromTool = async (
+    input: ProjectCloseRequest,
+    ctx: import('./tools/tool.js').ToolContext,
+  ): Promise<import('./tools/tool.js').ToolResult> => {
+    const executionContext = ctx.executionContext;
+    if (!executionContext?.projectId) {
+      return { output: 'This action requires an active project room or explicit project slug.', success: false, error: 'missing_project_context' };
+    }
+    if (!executionContext.principalId) {
+      return { output: '', success: false, error: 'Missing principal execution context.' };
+    }
+    const project = input.projectSlug
+      ? projectRegistry.findBySlug(input.projectSlug)
+      : projectRegistry.get(executionContext.projectId);
+    if (!project) {
+      return { output: '', success: false, error: `Project not found${input.projectSlug ? `: ${input.projectSlug}` : ''}.` };
+    }
+    const actorRole = getProjectRole(projectMemberships, project.projectId, executionContext.principalId);
+    const isOwner = project.ownerPrincipalId === executionContext.principalId;
+    const isAdmin = actorRole === 'admin';
+    if (!isOwner && !isAdmin) {
+      return {
+        output: 'Only the project owner or an admin can close a project.',
+        success: false,
+        error: 'owner_or_admin_required',
+      };
+    }
+
+    const projectRoot = resolveProjectRoot(runtimePaths, project);
+    const statusPath = join(projectRoot, 'STATUS.md');
+    const reason = input.reason?.trim();
+    const updated = await projectRegistry.update(project.projectId, {
+      status: 'closed',
+      metadata: {
+        ...(project.metadata ?? {}),
+        closedAt: new Date().toISOString(),
+        closedBy: executionContext.principalId,
+        closeReason: reason ?? null,
+      },
+    });
+
+    const prior = existsSync(statusPath) ? await readFile(statusPath, 'utf-8') : '# STATUS\n';
+    const closureBlock = [
+      '',
+      '## Closure',
+      `- Status: closed`,
+      `- Closed by: ${executionContext.principalName ?? executionContext.principalId}`,
+      reason ? `- Reason: ${reason}` : null,
+    ].filter(Boolean).join('\n');
+    await writeFile(statusPath, `${prior.trimEnd()}\n${closureBlock}\n`, 'utf-8');
+
+    const background = await buildProjectBackground(project.projectId, 'project_close');
+    await notifyBoundDiscordChannels(
+      project.projectId,
+      [
+        `[project closed] ${updated.displayName} (${updated.slug})`,
+        reason ? `Reason: ${reason}` : null,
+      ].filter(Boolean).join('\n'),
+    );
+
+    return {
+      output: [
+        `Closed ${updated.displayName} (${updated.slug}).`,
+        'Project status: closed.',
+        reason ? `Reason: ${reason}` : null,
+        background ? `Background: ${background.summary.split('\n')[0]}` : null,
+      ].filter(Boolean).join('\n'),
+      success: true,
+      data: {
+        projectId: updated.projectId,
+        projectSlug: updated.slug,
+        status: updated.status,
+      },
+    };
+  };
+
   const bootstrapDiscordProjectFromTool = async (
     input: ProjectBootstrapRequest,
     ctx: import('./tools/tool.js').ToolContext,
@@ -1715,6 +1791,7 @@ async function runStart(): Promise<void> {
     bootstrapFromPrompt: bootstrapDiscordProjectFromTool,
     manageMember: manageDiscordProjectMemberFromTool,
     syncProject: syncDiscordProjectFromTool,
+    closeProject: closeDiscordProjectFromTool,
   }));
 
   // ACP runtime (acpx-backed coding agent sessions)

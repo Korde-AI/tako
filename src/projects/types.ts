@@ -1,4 +1,4 @@
-export type ProjectStatus = 'active' | 'archived';
+export type ProjectStatus = 'active' | 'archived' | 'closed';
 export type ProjectRole = 'read' | 'contribute' | 'write' | 'admin';
 
 export interface ProjectCollaborationPolicy {

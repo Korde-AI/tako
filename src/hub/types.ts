@@ -23,7 +23,7 @@ export interface HubProjectRecord {
   displayName: string;
   ownerPrincipalId: string;
   hostNodeId: string;
-  status: 'active' | 'archived';
+  status: 'active' | 'archived' | 'closed';
   workspaceRootHint?: string;
   memberCount?: number;
   updatedAt: string;

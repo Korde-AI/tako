@@ -20,10 +20,16 @@ export interface ProjectSyncRequest {
   projectSlug?: string;
 }
 
+export interface ProjectCloseRequest {
+  reason?: string;
+  projectSlug?: string;
+}
+
 export interface ProjectToolDeps {
   bootstrapFromPrompt: (input: ProjectBootstrapRequest, ctx: ToolContext) => Promise<ToolResult>;
   manageMember: (input: ProjectMemberManageRequest, ctx: ToolContext) => Promise<ToolResult>;
   syncProject: (input: ProjectSyncRequest, ctx: ToolContext) => Promise<ToolResult>;
+  closeProject: (input: ProjectCloseRequest, ctx: ToolContext) => Promise<ToolResult>;
 }
 
 export function createProjectTools(deps: ProjectToolDeps): Tool[] {
@@ -138,5 +144,30 @@ export function createProjectTools(deps: ProjectToolDeps): Tool[] {
     },
   };
 
-  return [projectBootstrap, projectMemberManage, projectSync];
+  const projectClose: Tool = {
+    name: 'project_close',
+    description: 'Close the current project. Use this when the owner or an admin wants to close or finish a project. This sets the project status to closed, updates STATUS.md, and announces the closure.',
+    parameters: {
+      type: 'object',
+      properties: {
+        reason: {
+          type: 'string',
+          description: 'Optional closure reason or final note.',
+        },
+        projectSlug: {
+          type: 'string',
+          description: 'Optional project slug override. Omit to use the current project room.',
+        },
+      },
+    },
+    async execute(params: unknown, ctx: ToolContext): Promise<ToolResult> {
+      const raw = params as { input?: string };
+      const parsed = (raw?.input && typeof raw.input === 'string')
+        ? { reason: raw.input }
+        : params as ProjectCloseRequest;
+      return deps.closeProject(parsed, ctx);
+    },
+  };
+
+  return [projectBootstrap, projectMemberManage, projectSync, projectClose];
 }
