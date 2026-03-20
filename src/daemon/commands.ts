@@ -281,10 +281,16 @@ export async function runStatus(args: string[] = []): Promise<void> {
     if (config.channels.telegram?.token) channels.push('telegram');
     console.log(`Channels: ${channels.join(', ')}`);
 
-    const hasAnthropicKey = !!(process.env['ANTHROPIC_API_KEY'] || process.env['OPENCLAW_LIVE_ANTHROPIC_KEY']);
+    const hasAnthropicKey = !!(
+      process.env['ANTHROPIC_API_KEY']
+      || process.env['ANTHROPIC_SETUP_TOKEN']
+      || process.env['OPENCLAW_LIVE_ANTHROPIC_KEY']
+      || config.providers.anthropic?.apiKey
+      || config.providers.anthropic?.setupToken
+    );
     const hasEmbeddings = !!(process.env['OPENAI_API_KEY'] || process.env['VOYAGE_API_KEY']);
     console.log(`\nAPI Keys:`);
-    console.log(`  Anthropic: ${hasAnthropicKey ? 'configured' : 'missing'}`);
+    console.log(`  Anthropic: ${hasAnthropicKey ? 'configured (API key or setup-token)' : 'missing'}`);
     console.log(`  Embeddings: ${hasEmbeddings ? 'configured' : 'not set (BM25-only search)'}`);
   } catch {
     // Config not available — just show daemon status

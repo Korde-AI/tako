@@ -13,7 +13,7 @@ export async function checkProviders(config: TakoConfig): Promise<CheckResult> {
 
   // Check for API keys (including fallback env var names)
   const keyMap: Record<string, string[]> = {
-    anthropic: ['ANTHROPIC_API_KEY', 'OPENCLAW_LIVE_ANTHROPIC_KEY', 'ANTHROPIC_API_KEYS'],
+    anthropic: ['ANTHROPIC_SETUP_TOKEN', 'ANTHROPIC_API_KEY', 'OPENCLAW_LIVE_ANTHROPIC_KEY', 'ANTHROPIC_API_KEYS'],
     openai: ['OPENAI_API_KEY'],
     litellm: ['LITELLM_API_KEY'],
   };
@@ -33,13 +33,21 @@ export async function checkProviders(config: TakoConfig): Promise<CheckResult> {
   // Test actual API connectivity for Anthropic
   if (providerName === 'anthropic' && foundKey) {
     try {
-      const apiKey = process.env[foundKey]!;
+      const token = process.env[foundKey]!;
+      const isSetupToken = foundKey === 'ANTHROPIC_SETUP_TOKEN' || token.includes('sk-ant-oat');
       // Make a minimal API call to verify the key works
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
-          'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
+          ...(isSetupToken
+            ? {
+                'authorization': `Bearer ${token}`,
+                'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20',
+              }
+            : {
+                'x-api-key': token,
+              }),
           'content-type': 'application/json',
         },
         body: JSON.stringify({

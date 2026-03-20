@@ -224,9 +224,13 @@ export class DiscordChannel implements Channel {
           id: cmdInteraction.user.id,
           name: cmdInteraction.user.displayName || cmdInteraction.user.username,
           meta: {
+            username: cmdInteraction.user.username,
             discriminator: cmdInteraction.user.discriminator,
             guildId: cmdInteraction.guild?.id,
             guildName: cmdInteraction.guild?.name,
+            channelName: cmdInteraction.channel && 'name' in cmdInteraction.channel
+              ? (cmdInteraction.channel as { name?: string }).name ?? undefined
+              : undefined,
           },
         };
 
@@ -486,10 +490,15 @@ export class DiscordChannel implements Channel {
         id: message.author.id,
         name: message.author.displayName || message.author.username,
         meta: {
+          username: message.author.username,
           discriminator: message.author.discriminator,
           guildId: message.guild?.id,
           guildName: message.guild?.name,
+          channelName: 'name' in message.channel ? message.channel.name ?? undefined : undefined,
           parentChannelId: maybeThread?.parentId ?? undefined,
+          parentChannelName: maybeThread?.parent?.isTextBased?.() && 'name' in maybeThread.parent
+            ? (maybeThread.parent as { name?: string }).name ?? undefined
+            : undefined,
         },
       },
       content: message.content,

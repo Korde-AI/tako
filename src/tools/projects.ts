@@ -8,8 +8,16 @@ export interface ProjectBootstrapRequest {
   description?: string;
 }
 
+export interface ProjectMemberManageRequest {
+  action: 'add' | 'list';
+  targetIdentity?: string;
+  role?: 'read' | 'contribute' | 'write' | 'admin';
+  projectSlug?: string;
+}
+
 export interface ProjectToolDeps {
   bootstrapFromPrompt: (input: ProjectBootstrapRequest, ctx: ToolContext) => Promise<ToolResult>;
+  manageMember: (input: ProjectMemberManageRequest, ctx: ToolContext) => Promise<ToolResult>;
 }
 
 export function createProjectTools(deps: ProjectToolDeps): Tool[] {
@@ -49,5 +57,37 @@ export function createProjectTools(deps: ProjectToolDeps): Tool[] {
     },
   };
 
-  return [projectBootstrap];
+  const projectMemberManage: Tool = {
+    name: 'project_member_manage',
+    description: 'Manage project members in the current project room. Use this when the owner or a project admin wants to add or invite a human collaborator to the project, or list current project members. In Discord, this should be used for requests like "add Jiaxin to this project", "invite wandering123", or "who is in this project?". Adding a member promotes the project to collaborative mode.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['add', 'list'],
+          description: 'Whether to add a member or list current members.',
+        },
+        targetIdentity: {
+          type: 'string',
+          description: 'Discord user ID, @username, username, display name, or principal ID for the member to add.',
+        },
+        role: {
+          type: 'string',
+          enum: ['read', 'contribute', 'write', 'admin'],
+          description: 'Project role to assign when adding a member. Defaults to contribute.',
+        },
+        projectSlug: {
+          type: 'string',
+          description: 'Optional project slug override. Omit to use the current project room.',
+        },
+      },
+      required: ['action'],
+    },
+    async execute(params: unknown, ctx: ToolContext): Promise<ToolResult> {
+      return deps.manageMember(params as ProjectMemberManageRequest, ctx);
+    },
+  };
+
+  return [projectBootstrap, projectMemberManage];
 }

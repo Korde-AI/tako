@@ -122,7 +122,7 @@ import { CacheManager } from './cache/manager.js';
 import { setFsCacheManager } from './tools/fs.js';
 import { setExecCacheManager } from './tools/exec.js';
 import { setImageProvider } from './tools/image.js';
-import { createProjectTools, type ProjectBootstrapRequest } from './tools/projects.js';
+import { createProjectTools, type ProjectBootstrapRequest, type ProjectMemberManageRequest } from './tools/projects.js';
 import { runSymphony } from './cli/symphony.js';
 import { ExtensionRegistry } from './skills/extension-registry.js';
 import { loadExtension, getSkillsWithExtension } from './skills/extension-loader.js';
@@ -875,6 +875,192 @@ async function runStart(): Promise<void> {
     return ownerUserId === authorId;
   };
 
+  const normalizeDiscordPolicyIdentity = (value?: string | null): string | null => {
+    if (!value) return null;
+    const normalized = value.trim().replace(/^@+/, '').toLowerCase();
+    return normalized.length > 0 ? normalized : null;
+  };
+
+  const matchesDiscordPolicyUser = (
+    configured: string[] | undefined,
+    input: { authorId: string; authorName?: string; username?: string; principalId?: string },
+  ): boolean => {
+    if (!configured?.length) return false;
+    const candidates = new Set<string>();
+    const add = (value?: string | null) => {
+      const normalized = normalizeDiscordPolicyIdentity(value);
+      if (normalized) candidates.add(normalized);
+    };
+    add(input.authorId);
+    add(input.authorName);
+    add(input.username);
+    add(input.principalId);
+    return configured.some((value) => {
+      const normalized = normalizeDiscordPolicyIdentity(value);
+      return normalized ? candidates.has(normalized) : false;
+    });
+  };
+
+  const isDiscordInvocationAllowed = async (input: {
+    agentId: string;
+    authorId: string;
+    authorName?: string;
+    username?: string;
+    principalId?: string;
+    channelName?: string;
+    parentChannelName?: string;
+    project?: Project | null;
+  }): Promise<{ allowed: boolean; reason: string }> => {
+    const policy = config.channels.discord?.authPolicy;
+    if (!policy?.enabled) return { allowed: true, reason: 'policy_disabled' };
+
+    if (input.project) {
+      if (input.principalId && isProjectMember(projectMemberships, input.project.projectId, input.principalId)) {
+        return { allowed: true, reason: 'project_member' };
+      }
+      return {
+        allowed: input.project.collaboration?.mode === 'collaborative',
+        reason: input.project.collaboration?.mode === 'collaborative'
+          ? 'project_collaborative_auto_enroll'
+          : 'project_membership_required',
+      };
+    }
+
+    const generalChannels = (policy.generalChannels ?? ['general']).map((name) => name.trim().toLowerCase()).filter(Boolean);
+    const channelName = (input.parentChannelName ?? input.channelName ?? '').trim().toLowerCase();
+    const isGeneral = channelName.length > 0 && generalChannels.includes(channelName);
+    if (isGeneral) {
+      const ownerAllowed = await isUserAllowed('discord', input.agentId, input.authorId, input.principalId);
+      if (ownerAllowed) return { allowed: true, reason: 'general_owner' };
+      return {
+        allowed: matchesDiscordPolicyUser(policy.extraGeneralUsers, input),
+        reason: 'general_extra_user',
+      };
+    }
+
+    return {
+      allowed: policy.ignoreUnboundChannels !== false ? false : true,
+      reason: policy.ignoreUnboundChannels !== false ? 'unbound_channel_ignored' : 'unbound_channel_allowed',
+    };
+  };
+
+  const resolveDiscordPrincipalIdentity = (identity: string): { principalId: string; displayName: string; userId?: string; username?: string } | null => {
+    const normalized = normalizeDiscordPolicyIdentity(identity);
+    if (!normalized) return null;
+    const mappings = principalRegistry.listMappings().filter((mapping) => mapping.platform === 'discord');
+    for (const mapping of mappings) {
+      const principal = principalRegistry.get(mapping.principalId);
+      const candidates = new Set<string>();
+      const add = (value?: string | null) => {
+        const candidate = normalizeDiscordPolicyIdentity(value);
+        if (candidate) candidates.add(candidate);
+      };
+      add(mapping.platformUserId);
+      add(mapping.username);
+      add(mapping.displayName);
+      add(mapping.principalId);
+      add(principal?.displayName);
+      for (const alias of principal?.aliases ?? []) add(alias);
+      if (candidates.has(normalized)) {
+        return {
+          principalId: mapping.principalId,
+          displayName: principal?.displayName ?? mapping.displayName ?? mapping.username ?? mapping.platformUserId,
+          userId: mapping.platformUserId,
+          username: mapping.username,
+        };
+      }
+    }
+    return null;
+  };
+
+  const manageDiscordProjectMemberFromTool = async (
+    input: ProjectMemberManageRequest,
+    ctx: import('./tools/tool.js').ToolContext,
+  ): Promise<import('./tools/tool.js').ToolResult> => {
+    const executionContext = ctx.executionContext;
+    if (!executionContext?.projectId) {
+      return { output: 'This action requires an active project room or explicit project slug.', success: false, error: 'missing_project_context' };
+    }
+    if (!executionContext.principalId || !executionContext.authorId || !executionContext.agentId) {
+      return { output: '', success: false, error: 'Missing principal or channel execution context.' };
+    }
+    const project = input.projectSlug
+      ? projectRegistry.findBySlug(input.projectSlug)
+      : projectRegistry.get(executionContext.projectId);
+    if (!project) {
+      return { output: '', success: false, error: `Project not found${input.projectSlug ? `: ${input.projectSlug}` : ''}.` };
+    }
+
+    const actorRole = getProjectRole(projectMemberships, project.projectId, executionContext.principalId);
+    const isOwner = project.ownerPrincipalId === executionContext.principalId;
+    const isAdmin = actorRole === 'admin';
+    if (!isOwner && !isAdmin) {
+      return {
+        output: 'Only the project owner or an admin can manage project members.',
+        success: false,
+        error: 'owner_or_admin_required',
+      };
+    }
+
+    if (input.action === 'list') {
+      const memberships = projectMemberships.listByProject(project.projectId);
+      const lines = memberships.map((membership) => {
+        const principal = principalRegistry.get(membership.principalId);
+        return `- ${principal?.displayName ?? membership.principalId} (${membership.role})`;
+      });
+      return {
+        output: [
+          `Project ${project.displayName} (${project.slug}) members:`,
+          ...(lines.length ? lines : ['- none']),
+        ].join('\n'),
+        success: true,
+        data: memberships,
+      };
+    }
+
+    const targetIdentity = input.targetIdentity?.trim();
+    if (!targetIdentity) {
+      return { output: 'targetIdentity is required to add a project member.', success: false, error: 'missing_target_identity' };
+    }
+    const resolved = resolveDiscordPrincipalIdentity(targetIdentity);
+    if (!resolved) {
+      return {
+        output: `Could not resolve Discord user or principal: ${targetIdentity}`,
+        success: false,
+        error: 'target_not_found',
+      };
+    }
+    const role: ProjectRole = input.role ?? 'contribute';
+    await projectMemberships.upsert({
+      projectId: project.projectId,
+      principalId: resolved.principalId,
+      role,
+      addedBy: executionContext.principalId,
+    });
+    const updatedProject = await activateCollaborativeProject(project.projectId, `member_added:${resolved.principalId}`);
+    const background = await buildProjectBackground(project.projectId, `member_added:${resolved.principalId}`);
+    if (hubClient && nodeIdentity) {
+      await syncProjectMembershipsToHub(hubClient, nodeIdentity, project.projectId, projectMemberships).catch(() => {});
+    }
+    await notifyBoundDiscordChannels(
+      project.projectId,
+      `[member] ${resolved.displayName} added to ${project.slug} as ${role}`,
+    );
+    return {
+      output: [
+        `Added ${resolved.displayName} to ${project.displayName} (${project.slug}) as ${role}.`,
+        updatedProject?.collaboration?.mode === 'collaborative' ? 'Project mode: collaborative.' : null,
+        background ? `Background: ${background.summary.split('\n')[0]}` : null,
+      ].filter(Boolean).join('\n'),
+      success: true,
+      data: {
+        projectId: project.projectId,
+        principalId: resolved.principalId,
+        role,
+      },
+    };
+  };
+
   const bootstrapDiscordProjectFromTool = async (
     input: ProjectBootstrapRequest,
     ctx: import('./tools/tool.js').ToolContext,
@@ -1232,7 +1418,7 @@ async function runStart(): Promise<void> {
   let resolvedProviderLabel = config.providers.primary;
   switch (providerName) {
     case 'anthropic':
-      provider = new AnthropicProvider(undefined, undefined, config.providers.anthropic?.baseUrl);
+      provider = new AnthropicProvider(config.providers.anthropic?.setupToken ?? config.providers.anthropic?.apiKey, undefined, config.providers.anthropic?.baseUrl);
       break;
     case 'openai':
       provider = new OpenAIProvider();
@@ -1245,12 +1431,12 @@ async function runStart(): Promise<void> {
         console.error('[litellm]   Your primary model is litellm/* but no baseUrl is set.');
         console.error('[litellm]   Run `tako onboard` and configure LiteLLM, or switch provider.');
         console.error('[litellm]   Falling back to Anthropic provider.');
-        provider = new AnthropicProvider(undefined, undefined, config.providers.anthropic?.baseUrl);
+        provider = new AnthropicProvider(config.providers.anthropic?.setupToken ?? config.providers.anthropic?.apiKey, undefined, config.providers.anthropic?.baseUrl);
         resolvedProviderLabel = `anthropic (fallback — litellm misconfigured)`;
       }
       break;
     default:
-      provider = new AnthropicProvider(undefined, undefined, config.providers.anthropic?.baseUrl);
+      provider = new AnthropicProvider(config.providers.anthropic?.setupToken ?? config.providers.anthropic?.apiKey, undefined, config.providers.anthropic?.baseUrl);
       resolvedProviderLabel = `anthropic (fallback — unknown provider '${providerName}')`;
   }
 
@@ -1265,7 +1451,7 @@ async function runStart(): Promise<void> {
     if (!providerMap.has(pid)) {
       switch (pid) {
         case 'anthropic':
-          providerMap.set(pid, new AnthropicProvider(undefined, undefined, config.providers.anthropic?.baseUrl));
+          providerMap.set(pid, new AnthropicProvider(config.providers.anthropic?.setupToken ?? config.providers.anthropic?.apiKey, undefined, config.providers.anthropic?.baseUrl));
           break;
         case 'openai':
           providerMap.set(pid, new OpenAIProvider());
@@ -1358,6 +1544,7 @@ async function runStart(): Promise<void> {
   toolRegistry.registerAll(createAllowFromTools());
   toolRegistry.registerAll(createProjectTools({
     bootstrapFromPrompt: bootstrapDiscordProjectFromTool,
+    manageMember: manageDiscordProjectMemberFromTool,
   }));
 
   // ACP runtime (acpx-backed coding agent sessions)
@@ -1956,6 +2143,26 @@ async function runStart(): Promise<void> {
         threadId: msg.threadId,
         agentId: inboundAgentId,
       });
+      if (channelType === 'discord') {
+        const discordPolicy = await isDiscordInvocationAllowed({
+          agentId: inboundAgentId,
+          authorId: msg.author.id,
+          authorName: msg.author.name,
+          username: typeof msg.author.meta?.username === 'string' ? msg.author.meta.username : undefined,
+          principalId: principal.principalId,
+          channelName: typeof msg.author.meta?.channelName === 'string' ? msg.author.meta.channelName : undefined,
+          parentChannelName: typeof msg.author.meta?.parentChannelName === 'string' ? msg.author.meta.parentChannelName : undefined,
+          project: resolvedProject?.project ?? null,
+        });
+        if (!discordPolicy.allowed) {
+          console.log(
+            `[discord-auth] blocked message agent=${inboundAgentId} user=${msg.author.id} principal=${principal.principalId} ` +
+            `channel=${msg.channelId} name=${String(msg.author.meta?.channelName ?? '')} ` +
+            `parent=${String(msg.author.meta?.parentChannelName ?? '')} reason=${discordPolicy.reason}`,
+          );
+          return;
+        }
+      }
       const projectRole = resolvedProject
         ? getProjectRole(projectMemberships, resolvedProject.project.projectId, principal.principalId) ?? undefined
         : undefined;
@@ -2679,7 +2886,7 @@ async function runStart(): Promise<void> {
   const handleSlashCommand = async (
     commandName: string,
     channelId: string,
-    author: { id: string; name: string },
+    author: { id: string; name: string; meta?: Record<string, unknown> },
     agentId: string,
     boundChannel: Channel,
     guildId?: string,
@@ -2696,6 +2903,22 @@ async function runStart(): Promise<void> {
       channelTarget: projectChannelTarget,
       agentId,
     });
+    const discordPolicy = await isDiscordInvocationAllowed({
+      agentId,
+      authorId: author.id,
+      authorName: author.name,
+      username: typeof author.meta?.username === 'string' ? author.meta.username : undefined,
+      principalId: principal.principalId,
+      channelName: typeof author.meta?.channelName === 'string' ? author.meta.channelName : undefined,
+      project: resolvedProject?.project ?? null,
+    });
+    if (!discordPolicy.allowed) {
+      console.log(
+        `[discord-auth] blocked slash command agent=${agentId} user=${author.id} principal=${principal.principalId} ` +
+        `channel=${channelId} name=${String(author.meta?.channelName ?? '')} reason=${discordPolicy.reason}`,
+      );
+      return null;
+    }
     const projectRole = resolvedProject
       ? getProjectRole(projectMemberships, resolvedProject.project.projectId, principal.principalId) ?? undefined
       : undefined;
@@ -2802,7 +3025,7 @@ async function runStart(): Promise<void> {
       const providerModelsMap: Record<string, string[]> = {};
 
       // Anthropic models (always available)
-      const anthropicProvider = new AnthropicProvider(undefined, undefined, config.providers.anthropic?.baseUrl);
+      const anthropicProvider = new AnthropicProvider(config.providers.anthropic?.setupToken ?? config.providers.anthropic?.apiKey, undefined, config.providers.anthropic?.baseUrl);
       providerModelsMap['anthropic'] = anthropicProvider.models().map((m) => m.id);
 
       // OpenAI models (always available)

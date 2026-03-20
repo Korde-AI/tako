@@ -43,6 +43,49 @@ interface CacheableTextBlock {
   cache_control?: { type: 'ephemeral' };
 }
 
+const CLAUDE_CODE_TOOLS = [
+  'Read',
+  'Write',
+  'Edit',
+  'Bash',
+  'Grep',
+  'Glob',
+  'AskUserQuestion',
+  'EnterPlanMode',
+  'ExitPlanMode',
+  'KillShell',
+  'NotebookEdit',
+  'Skill',
+  'Task',
+  'TaskOutput',
+  'TodoWrite',
+  'WebFetch',
+  'WebSearch',
+] as const;
+
+function normalizeClaudeCodeToolKey(name: string): string {
+  return name.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+}
+
+const CLAUDE_CODE_TOOL_LOOKUP = new Map(
+  CLAUDE_CODE_TOOLS.map((name) => [normalizeClaudeCodeToolKey(name), name]),
+);
+
+function toClaudeCodeToolName(name: string): string {
+  return CLAUDE_CODE_TOOL_LOOKUP.get(normalizeClaudeCodeToolKey(name)) ?? name;
+}
+
+function fromClaudeCodeToolName(name: string, tools?: ToolDefinition[]): string {
+  if (tools && tools.length > 0) {
+    const normalized = normalizeClaudeCodeToolKey(name);
+    const matched = tools.find((tool) => normalizeClaudeCodeToolKey(tool.name) === normalized);
+    if (matched) {
+      return matched.name;
+    }
+  }
+  return name;
+}
+
 /** Cumulative cache usage stats across a session. */
 export interface CacheStats {
   /** Total tokens written to cache. */
@@ -57,10 +100,14 @@ export interface CacheStats {
 
 export class AnthropicProvider implements Provider {
   id = 'anthropic';
+  private static readonly CLAUDE_CODE_VERSION = '2.1.75';
+  private static readonly CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
   private apiKeys: string[];
   private authResolved = false;
   /** When set, the resolved auth is a Bearer token (setup_token / oauth), not an API key. */
   private bearerToken: string | null = null;
+  /** Distinguish refreshable OAuth from non-refreshable Claude setup-token auth. */
+  private bearerMethod: 'setup_token' | 'oauth' | null = null;
   /** Custom base URL (e.g. OpenClaw gateway proxy). */
   private baseUrl: string | undefined;
   /** Cumulative cache usage stats. */
@@ -95,6 +142,7 @@ export class AnthropicProvider implements Provider {
     if (auth) {
       if (this.isOAuthToken(auth.token) || auth.method === 'setup_token' || auth.method === 'oauth') {
         this.bearerToken = auth.token;
+        this.bearerMethod = auth.method === 'oauth' ? 'oauth' : 'setup_token';
         this.apiKeys = []; // Clear env-based keys
         console.log(`[anthropic] Using ${auth.method} auth from ${auth.source}`);
         return;
@@ -110,6 +158,7 @@ export class AnthropicProvider implements Provider {
     // Check if any existing key (from env) is actually an OAuth token
     if (this.apiKeys.length > 0 && this.isOAuthToken(this.apiKeys[0])) {
       this.bearerToken = this.apiKeys[0];
+      this.bearerMethod = 'setup_token';
       this.apiKeys = [];
       return;
     }
@@ -124,7 +173,7 @@ export class AnthropicProvider implements Provider {
    * Called before each API request when using a bearer token.
    */
   private async proactiveRefresh(): Promise<void> {
-    if (!this.bearerToken) return;
+    if (!this.bearerToken || this.bearerMethod !== 'oauth') return;
 
     const cred = await readAuthCredential('anthropic');
     if (!cred) return;
@@ -148,11 +197,12 @@ export class AnthropicProvider implements Provider {
     if (!this.isAuthError(err)) return false;
 
     // 1. Try refreshing the OAuth token
-    if (this.bearerToken) {
+    if (this.bearerToken && this.bearerMethod === 'oauth') {
       console.warn('[anthropic] Auth error with OAuth token, attempting refresh...');
       const refreshed = await refreshOAuthToken('anthropic');
       if (refreshed) {
         this.bearerToken = refreshed.access_token;
+        this.bearerMethod = 'oauth';
         return true;
       }
 
@@ -169,6 +219,10 @@ export class AnthropicProvider implements Provider {
         '[anthropic] OAuth token expired/revoked and no fallback API key available.\n' +
         '            Run `tako models auth login --provider anthropic` to re-authenticate.',
       );
+    }
+
+    if (this.bearerToken && this.bearerMethod === 'setup_token') {
+      return false;
     }
 
     return false;
@@ -263,7 +317,7 @@ export class AnthropicProvider implements Provider {
           'accept': 'application/json',
           'anthropic-dangerous-direct-browser-access': 'true',
           'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14',
-          'user-agent': 'tako/0.0.1',
+          'user-agent': `claude-cli/${AnthropicProvider.CLAUDE_CODE_VERSION}`,
           'x-app': 'cli',
         },
       });
@@ -285,11 +339,16 @@ export class AnthropicProvider implements Provider {
 
     const model = this.extractModelId(req.model);
     const { system, messages } = this.convertMessages(req.messages);
-    const tools = req.tools?.map((t) => this.convertTool(t));
+    const isClaudeCodeBearer = Boolean(this.bearerToken && this.isOAuthToken(this.bearerToken));
+    const tools = req.tools?.map((t) => this.convertTool(t, isClaudeCodeBearer));
     const cacheRetention = req.cacheRetention ?? 'none';
 
     // Build system param: string or array with cache_control
-    const systemParam = this.buildSystemParam(system, cacheRetention);
+    const systemParam = this.buildSystemParam(
+      system,
+      cacheRetention,
+      isClaudeCodeBearer,
+    );
 
     // Inject cache_control on conversation prefix in 'long' mode
     if (cacheRetention === 'long') {
@@ -367,9 +426,29 @@ export class AnthropicProvider implements Provider {
   private buildSystemParam(
     system: string,
     cacheRetention: 'none' | 'short' | 'long',
+    includeClaudeCodeIdentity = false,
   ): string | CacheableTextBlock[] {
-    if (!system || cacheRetention === 'none') {
-      return system;
+    if (includeClaudeCodeIdentity) {
+      const blocks: CacheableTextBlock[] = [{
+        type: 'text',
+        text: AnthropicProvider.CLAUDE_CODE_IDENTITY,
+      }];
+      if (system) {
+        blocks.push({
+          type: 'text',
+          text: system,
+        });
+      }
+      if (cacheRetention !== 'none') {
+        blocks[blocks.length - 1].cache_control = { type: 'ephemeral' };
+      }
+      return blocks;
+    }
+
+    const fullSystem = system;
+
+    if (!fullSystem || cacheRetention === 'none') {
+      return fullSystem;
     }
 
     // Split into blocks and mark the last one as cacheable.
@@ -378,7 +457,7 @@ export class AnthropicProvider implements Provider {
     // system prompt caches the entire system prompt.
     return [{
       type: 'text' as const,
-      text: system,
+      text: fullSystem,
       cache_control: { type: 'ephemeral' as const },
     }];
   }
@@ -428,7 +507,9 @@ export class AnthropicProvider implements Provider {
       const status = (err as { status?: number }).status;
       if (status === 401 || status === 403) {
         const hint = this.bearerToken
-          ? 'Setup token may be expired or invalid. Run `tako models auth login --provider anthropic` to refresh.'
+          ? (this.bearerMethod === 'oauth'
+              ? 'OAuth token may be expired or invalid. Run `tako models auth login --provider anthropic` to refresh.'
+              : 'Setup token may be invalid or rejected. Re-run `claude setup-token` and `tako models auth login --provider anthropic` if needed.')
           : 'Check your ANTHROPIC_API_KEY or run `tako models auth login --provider anthropic`.';
         return new Error(
           `[anthropic] Authentication failed (HTTP ${status}). ${hint}`,
@@ -448,6 +529,7 @@ export class AnthropicProvider implements Provider {
     tools: Anthropic.Tool[] | undefined,
     req: ChatRequest,
   ): AsyncIterable<ChatChunk> {
+    const isClaudeCodeBearer = Boolean(this.bearerToken && this.isOAuthToken(this.bearerToken));
     // Build system param — use array form for cache_control, string/undefined otherwise
     const systemValue = Array.isArray(system)
       ? system as unknown as Array<TextBlockParam>
@@ -527,7 +609,7 @@ export class AnthropicProvider implements Provider {
           // Final chunk with any accumulated tool calls
           const parsedToolCalls = toolCalls.map((tc) => ({
             id: tc.id,
-            name: tc.name,
+            name: isClaudeCodeBearer ? fromClaudeCodeToolName(tc.name, req.tools) : tc.name,
             input: tc.inputJson ? JSON.parse(tc.inputJson) : {},
           }));
 
@@ -556,6 +638,7 @@ export class AnthropicProvider implements Provider {
     tools: Anthropic.Tool[] | undefined,
     req: ChatRequest,
   ): AsyncIterable<ChatChunk> {
+    const isClaudeCodeBearer = Boolean(this.bearerToken && this.isOAuthToken(this.bearerToken));
     const systemValue = Array.isArray(system)
       ? system as unknown as Array<TextBlockParam>
       : (system || undefined);
@@ -577,7 +660,11 @@ export class AnthropicProvider implements Provider {
       if (block.type === 'text') {
         text += block.text;
       } else if (block.type === 'tool_use') {
-        toolCalls.push({ id: block.id, name: block.name, input: block.input });
+        toolCalls.push({
+          id: block.id,
+          name: isClaudeCodeBearer ? fromClaudeCodeToolName(block.name, req.tools) : block.name,
+          input: block.input,
+        });
       }
     }
 
@@ -799,9 +886,9 @@ export class AnthropicProvider implements Provider {
   }
 
   /** Convert a Tako ToolDefinition to an Anthropic Tool. */
-  private convertTool(tool: ToolDefinition): Anthropic.Tool {
+  private convertTool(tool: ToolDefinition, isClaudeCodeBearer = false): Anthropic.Tool {
     return {
-      name: tool.name,
+      name: isClaudeCodeBearer ? toClaudeCodeToolName(tool.name) : tool.name,
       description: tool.description,
       input_schema: {
         type: 'object' as const,
