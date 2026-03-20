@@ -158,6 +158,7 @@ import { ProjectBranchRegistry } from './projects/branches.js';
 import { getWorktreeRepoStatus } from './projects/patches.js';
 import { ProjectWorktreeRegistry } from './projects/worktrees.js';
 import { inferProjectBootstrapIntent } from './projects/bootstrap-intent.js';
+import { detectProjectRoomSignal } from './projects/room-signals.js';
 import { SharedSessionRegistry, type SharedSession } from './sessions/shared.js';
 import {
   createHubClientFromConfig,
@@ -858,14 +859,13 @@ async function runStart(): Promise<void> {
     return updated;
   };
 
-  const autoEnrollCollaborativePrincipal = async (input: {
+  const autoEnrollProjectRoomParticipant = async (input: {
     project: Project;
     principalId: string;
     principalName?: string;
     platform: 'discord' | 'telegram' | 'cli';
     addedBy: string;
   }): Promise<boolean> => {
-    if (input.project.collaboration?.mode !== 'collaborative') return false;
     if (input.platform !== 'discord') return false;
     if (isProjectMember(projectMemberships, input.project.projectId, input.principalId)) return false;
     if (input.principalId === input.project.ownerPrincipalId) return false;
@@ -875,16 +875,75 @@ async function runStart(): Promise<void> {
       role: 'contribute',
       addedBy: input.addedBy,
     });
+    const updatedProject = await activateCollaborativeProject(input.project.projectId, `member_auto_join:${input.principalId}`);
     await buildProjectBackground(input.project.projectId, `member_auto_join:${input.principalId}`);
     if (hubClient && nodeIdentity) {
+      await syncProjectToHub(hubClient, nodeIdentity, updatedProject ?? input.project, projectMemberships).catch(() => {});
       await syncProjectMembershipsToHub(hubClient, nodeIdentity, input.project.projectId, projectMemberships).catch(() => {});
     }
     const who = input.principalName ?? input.principalId;
     await notifyBoundDiscordChannels(
       input.project.projectId,
-      `[member] ${who} joined ${input.project.slug} as contributor`,
+      [
+        `[member] ${who} joined ${input.project.slug} as contributor`,
+        (updatedProject?.collaboration?.mode ?? input.project.collaboration?.mode) === 'collaborative'
+          ? 'Project mode: collaborative.'
+          : null,
+      ].filter(Boolean).join('\n'),
     );
     return true;
+  };
+
+  const sweepProjectRoomSignal = async (input: {
+    project: Project;
+    principalId: string;
+    principalName?: string;
+    text: string;
+  }): Promise<void> => {
+    const signal = detectProjectRoomSignal(input.text);
+    if (!signal) return;
+
+    const projectRoot = resolveProjectRoot(runtimePaths, input.project);
+    const statusPath = join(projectRoot, 'STATUS.md');
+    const prior = existsSync(statusPath) ? await readFile(statusPath, 'utf-8') : '# STATUS\n';
+    const stamp = new Date().toISOString();
+    const heading = signal.kind === 'progress' ? '## Room Progress Signals' : '## Rebuttals And Risks';
+    const line = `- ${stamp} — ${input.principalName ?? input.principalId}: ${signal.summary}`;
+    await writeFile(statusPath, `${prior.trimEnd()}\n\n${heading}\n${line}\n`, 'utf-8');
+
+    const background = await buildProjectBackground(input.project.projectId, `room_signal:${signal.kind}`);
+    const notice = signal.kind === 'progress'
+      ? `[coordination] Progress update from ${input.principalName ?? input.principalId}: ${signal.summary}`
+      : `[coordination] Rebuttal/risk raised by ${input.principalName ?? input.principalId}: ${signal.summary}\nPlease review, respond, and align the next step.`;
+    await notifyBoundDiscordChannels(input.project.projectId, notice);
+
+    if (hubClient && nodeIdentity) {
+      await syncProjectToHub(hubClient, nodeIdentity, projectRegistry.get(input.project.projectId) ?? input.project, projectMemberships).catch(() => {});
+    }
+
+    const networkSession = networkSharedSessions.findByProject(input.project.projectId)
+      .find((candidate) => candidate.participantNodeIds.includes(getNodeIdentity().nodeId)) ?? null;
+    if (hubClient && nodeIdentity && networkSession?.participantNodeIds.length) {
+      await sendNetworkSessionEvent(hubClient, networkSharedSessions, trustStore, {
+        eventId: crypto.randomUUID(),
+        networkSessionId: networkSession.networkSessionId,
+        projectId: input.project.projectId,
+        fromNodeId: nodeIdentity.nodeId,
+        fromPrincipalId: input.principalId,
+        type: 'system',
+        audience: 'specific-nodes',
+        targetNodeIds: networkSession.participantNodeIds,
+        payload: {
+          summary: notice,
+          metadata: {
+            signalKind: signal.kind,
+            projectSlug: input.project.slug,
+            backgroundSummary: background?.summary,
+          },
+        },
+        createdAt: new Date().toISOString(),
+      }).catch(() => {});
+    }
   };
 
   const ensureDiscordBootstrapOwnership = async (
@@ -948,10 +1007,8 @@ async function runStart(): Promise<void> {
         return { allowed: true, reason: 'project_member' };
       }
       return {
-        allowed: input.project.collaboration?.mode === 'collaborative',
-        reason: input.project.collaboration?.mode === 'collaborative'
-          ? 'project_collaborative_auto_enroll'
-          : 'project_membership_required',
+        allowed: true,
+        reason: 'project_room_presence',
       };
     }
 
@@ -2474,7 +2531,7 @@ async function runStart(): Promise<void> {
       }
 
       if (resolvedProject && !isProjectMember(projectMemberships, resolvedProject.project.projectId, principal.principalId)) {
-        const enrolled = await autoEnrollCollaborativePrincipal({
+        const enrolled = await autoEnrollProjectRoomParticipant({
           project: resolvedProject.project,
           principalId: principal.principalId,
           principalName: principal.displayName,
@@ -2509,6 +2566,15 @@ async function runStart(): Promise<void> {
       };
       applyExecutionContextToSession(session, sessionContext, channel);
       session.metadata.messageId = msg.id;
+
+      if (resolvedProject && inboundText.trim()) {
+        await sweepProjectRoomSignal({
+          project: resolvedProject.project,
+          principalId: principal.principalId,
+          principalName: principal.displayName,
+          text: inboundText,
+        }).catch(() => {});
+      }
 
       // Extract platform-specific target for typing/reactions
       const target = session.metadata.channelTarget as string;
@@ -3227,7 +3293,7 @@ async function runStart(): Promise<void> {
     applyExecutionContextToSession(session, executionContext, boundChannel);
 
     if (resolvedProject && !isProjectMember(projectMemberships, resolvedProject.project.projectId, principal.principalId)) {
-      const enrolled = await autoEnrollCollaborativePrincipal({
+      const enrolled = await autoEnrollProjectRoomParticipant({
         project: resolvedProject.project,
         principalId: principal.principalId,
         principalName: principal.displayName,
