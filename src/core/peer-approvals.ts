@@ -169,6 +169,20 @@ export class PeerTaskApprovalRegistry {
     return updated;
   }
 
+  async markExecuted(approvalId: string): Promise<PeerTaskApproval> {
+    await this.ensureLoaded();
+    const approval = this.get(approvalId);
+    if (!approval) throw new Error(`Peer approval not found: ${approvalId}`);
+    const updated: PeerTaskApproval = {
+      ...approval,
+      status: 'executed',
+      updatedAt: new Date().toISOString(),
+    };
+    this.approvals.set(updated.approvalId, updated);
+    await this.save();
+    return updated;
+  }
+
   async save(): Promise<void> {
     await mkdir(this.parentDir(), { recursive: true });
     await writeFile(this.filePath, JSON.stringify(this.list(), null, 2) + '\n', 'utf-8');

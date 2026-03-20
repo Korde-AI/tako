@@ -2856,22 +2856,70 @@ async function runStart(): Promise<void> {
       return;
     }
 
-    const activeLoop = getAgentLoop(session.metadata?.agentId as string | undefined);
-    activeProcessingSessions.add(session.id);
+    const executionContext = session.metadata?.executionContext as ExecutionContext | undefined;
+    const allowedToolRoot = executionContext?.allowedToolRoot
+      ?? executionContext?.projectRoot
+      ?? config.memory.workspace;
+    const tool = toolRegistry.getTool(approval.toolName);
     let response = '';
     let hadError = false;
+    let directExecutionAttempted = false;
 
     try {
-      activeLoop.setChannel(channelRef);
-      for await (const chunk of activeLoop.run(session, approval.resumePrompt)) {
-        response += chunk;
+      if (tool) {
+        directExecutionAttempted = true;
+        const toolCtx = {
+          sessionId: session.id,
+          workDir: allowedToolRoot,
+          workspaceRoot: config.memory.workspace,
+          allowedToolRoot,
+          agentId: approval.agentId,
+          agentRole: String(executionContext?.metadata?.['effectiveAgentRole'] ?? session.metadata?.agentRole ?? 'admin'),
+          channelType: approval.channelType ?? session.metadata?.channelType as string | undefined,
+          channelTarget: approval.channelTarget ?? session.metadata?.channelTarget as string | undefined,
+          channel: channelRef,
+          executionContext,
+        };
+        const result = await tool.execute(approval.toolArgs, toolCtx);
+        if (!result.success) {
+          throw new Error(result.error || result.output || `Approved tool ${approval.toolName} failed`);
+        }
+        await peerTaskApprovals.markExecuted(approval.approvalId);
+        audit.log({
+          agentId: approval.agentId,
+          sessionId: approval.sessionId,
+          principalId: approval.requesterPrincipalId,
+          principalName: approval.requesterPrincipalName,
+          projectId: approval.projectId,
+          projectSlug: approval.projectSlug,
+          event: 'agent_comms',
+          action: 'peer_task_execute_approved',
+          details: {
+            approvalId: approval.approvalId,
+            toolName: approval.toolName,
+          },
+          success: true,
+        }).catch(() => {});
+
+        if (approval.toolName !== 'message' && result.output.trim()) {
+          response = result.output.trim();
+        }
+      } else {
+        activeProcessingSessions.add(session.id);
+        const activeLoop = getAgentLoop(session.metadata?.agentId as string | undefined);
+        activeLoop.setChannel(channelRef);
+        for await (const chunk of activeLoop.run(session, approval.resumePrompt)) {
+          response += chunk;
+        }
       }
     } catch (err) {
       hadError = true;
       response = formatUserFacingAgentError(err);
       console.error(`[peer-approval] Resume failed for ${approval.approvalId}:`, err instanceof Error ? err.message : err);
     } finally {
-      activeProcessingSessions.delete(session.id);
+      if (!directExecutionAttempted) {
+        activeProcessingSessions.delete(session.id);
+      }
     }
 
     if (response.trim()) {
@@ -2895,6 +2943,7 @@ async function runStart(): Promise<void> {
       details: {
         approvalId: approval.approvalId,
         toolName: approval.toolName,
+        directExecution: directExecutionAttempted,
       },
       success: !hadError,
     }).catch(() => {});

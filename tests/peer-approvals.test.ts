@@ -60,4 +60,26 @@ describe('PeerTaskApprovalRegistry', () => {
 
     await rm(root, { recursive: true, force: true });
   });
+
+  it('marks an approved request as executed after direct replay', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tako-peer-approvals-'));
+    const registry = new PeerTaskApprovalRegistry(join(root, 'peer-task-approvals.json'));
+    await registry.load();
+
+    const created = await registry.createOrReuse({
+      sessionId: 'session-3',
+      agentId: 'agent-c',
+      toolName: 'message',
+      toolArgs: { action: 'send', platform: 'discord', target: 'current', message: 'hello' },
+      originalUserMessage: 'tell the room hello',
+      resumePrompt: 'resume',
+    });
+    await registry.resolve(created.approval.approvalId, 'approved');
+    const executed = await registry.markExecuted(created.approval.approvalId);
+
+    assert.equal(executed.status, 'executed');
+    assert.equal(registry.get(created.approval.approvalId)?.status, 'executed');
+
+    await rm(root, { recursive: true, force: true });
+  });
 });
