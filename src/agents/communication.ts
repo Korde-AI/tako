@@ -9,7 +9,7 @@
 
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { getRuntimePaths } from '../core/paths.js';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -40,7 +40,7 @@ export class AgentComms {
 
   constructor(config: CommsConfig, commsDir?: string) {
     this.config = config;
-    this.commsDir = commsDir ?? join(homedir(), '.tako', 'agents', 'comms');
+    this.commsDir = commsDir ?? join(getRuntimePaths().agentsDir, 'comms');
   }
 
   /** Wire the message handler (called when a message needs to be processed by the receiving agent). */

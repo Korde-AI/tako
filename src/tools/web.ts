@@ -6,6 +6,47 @@
 import type { Tool, ToolContext, ToolResult } from './tool.js';
 import { checkNetworkPolicy } from '../core/security.js';
 
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ');
+}
+
+function looksLikeHtml(text: string): boolean {
+  return /<!doctype html|<html[\s>]|<head[\s>]|<body[\s>]/i.test(text);
+}
+
+function summarizeHtml(url: string, html: string): string {
+  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+  const metaDescription = html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([\s\S]*?)["'][^>]*>/i)?.[1]
+    ?? html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([\s\S]*?)["'][^>]*>/i)?.[1];
+
+  const stripped = decodeHtmlEntities(
+    html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
+      .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  );
+
+  const lines = [
+    `URL: ${url}`,
+    title ? `Title: ${decodeHtmlEntities(title).replace(/\s+/g, ' ').trim()}` : null,
+    metaDescription ? `Description: ${decodeHtmlEntities(metaDescription).replace(/\s+/g, ' ').trim()}` : null,
+    stripped ? `Text: ${stripped.slice(0, 12000)}${stripped.length > 12000 ? '\n[...truncated]' : ''}` : null,
+  ].filter(Boolean);
+
+  return lines.join('\n');
+}
+
 // ─── web_search ─────────────────────────────────────────────────────
 
 interface WebSearchParams {
@@ -96,7 +137,7 @@ interface WebFetchParams {
 
 export const webFetchTool: Tool = {
   name: 'web_fetch',
-  description: 'Fetch content from a URL.',
+  description: 'Fetch readable content from a URL. For HTML pages, returns extracted text and metadata rather than raw DOM.',
   group: 'web',
   parameters: {
     type: 'object',
@@ -125,8 +166,11 @@ export const webFetchTool: Tool = {
         body,
       });
       const text = await resp.text();
-      // Truncate large responses
-      const truncated = text.length > 50_000 ? text.slice(0, 50_000) + '\n[...truncated]' : text;
+      const contentType = resp.headers.get('content-type') ?? '';
+      const normalized = (contentType.includes('text/html') || looksLikeHtml(text))
+        ? summarizeHtml(url, text)
+        : text;
+      const truncated = normalized.length > 12_000 ? normalized.slice(0, 12_000) + '\n[...truncated]' : normalized;
       return { output: truncated, success: resp.ok };
     } catch (err) {
       return { output: '', success: false, error: `web_fetch failed: ${err}` };

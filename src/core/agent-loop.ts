@@ -394,6 +394,8 @@ export class AgentLoop {
 
   async *run(session: Session, userMessage: string, attachments?: Array<{ type: string; url?: string; filename?: string; mimeType?: string }>): AsyncIterable<string> {
     const { provider, toolRegistry, promptBuilder, contextManager, hooks, skillLoader } = this.deps;
+    const baselineMessages = session.messages.slice();
+    const baselineLastActiveAt = session.lastActiveAt;
 
     // 1. Fire agent_start hook
     if (hooks) {
@@ -1210,6 +1212,13 @@ export class AgentLoop {
           timestamp: Date.now(),
         });
       }
+    } catch (err) {
+      // A failed turn must not leave partial tool traces or duplicated user messages
+      // in session history. Later retries/new questions should see only committed turns.
+      session.messages = baselineMessages;
+      session.lastActiveAt = baselineLastActiveAt;
+      this.deps.toolLoopDetector?.clearSession(session.id);
+      throw err;
     } finally {
       // Safety: always clear typing interval even if any unexpected error escapes.
       this.deps.typingManager?.stop(chatId);

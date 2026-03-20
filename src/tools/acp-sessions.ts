@@ -1,60 +1,64 @@
 /**
- * Persistent ACP Sessions — spawn and interact with long-running
- * Claude Code or Codex sessions via stdin/stdout pipes.
+ * Persistent ACP Sessions — manage long-running acpx sessions.
  *
  * Unlike the one-shot `acp_spawn`, persistent sessions allow:
  * - Sending follow-up messages to an ongoing conversation
  * - Checking status and retrieving output
  * - Listing and killing sessions
+ *
+ * Uses AcpxRuntime for proper protocol-based communication.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import type {
+  AcpxRuntime,
+  AcpRuntimeHandle,
+} from '../acp/runtime.js';
+import type { AcpRuntimeConfig } from '../acp/config.js';
+import type { AcpRuntimeEvent } from '../acp/events.js';
 import type { Tool, ToolContext, ToolResult } from './tool.js';
-import type { AcpConfig } from './acp.js';
+import { getRuntimePaths } from '../core/paths.js';
 
-// ─── Types ──────────────────────────────────────────────────────────
+// ─── Types ──────────────────────────────────────────────────────
 
 export interface AcpSession {
   id: string;
-  backend: 'claude' | 'codex';
-  pid: number;
+  agent: string;
   cwd: string;
   status: 'running' | 'completed' | 'failed' | 'timeout';
   startedAt: number;
   label?: string;
   agentId: string;
+  handle: AcpRuntimeHandle;
   messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp: number }>;
 }
 
-interface SessionProcess {
-  session: AcpSession;
-  process: ChildProcess;
-  outputBuffer: string;
-  lastActivity: number;
+// ─── Session Manager ────────────────────────────────────────────
+
+function getSessionsDir(): string {
+  return getRuntimePaths().acpDir;
 }
 
-// ─── Session Manager ────────────────────────────────────────────────
-
-const SESSIONS_DIR = join(homedir(), '.tako', 'acp');
-const SESSIONS_FILE = join(SESSIONS_DIR, 'sessions.json');
+function getSessionsFile(): string {
+  return join(getSessionsDir(), 'sessions.json');
+}
 
 export class AcpSessionManager {
-  private processes = new Map<string, SessionProcess>();
-  private config: AcpConfig;
+  private sessions = new Map<string, AcpSession>();
+  private config: AcpRuntimeConfig;
+  private runtime: AcpxRuntime;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(config: AcpConfig) {
+  constructor(config: AcpRuntimeConfig, runtime: AcpxRuntime) {
     this.config = config;
+    this.runtime = runtime;
   }
 
   /** Start periodic cleanup of timed-out sessions. */
   startCleanup(intervalMs = 30_000): void {
     if (this.cleanupTimer) return;
-    this.cleanupTimer = setInterval(() => this.cleanupStale(), intervalMs);
+    this.cleanupTimer = setInterval(() => void this.cleanupStale(), intervalMs);
     this.cleanupTimer.unref();
   }
 
@@ -72,86 +76,36 @@ export class AcpSessionManager {
   async start(
     task: string,
     agentId: string,
-    opts?: { cwd?: string; model?: string; label?: string },
+    opts?: { cwd?: string; agent?: string; label?: string },
   ): Promise<AcpSession> {
-    const id = randomUUID().slice(0, 8);
-    const cwd = opts?.cwd ?? process.cwd();
-    const backend = this.config.backend;
+    const cwd = opts?.cwd ?? this.config.cwd;
+    const agent = opts?.agent ?? this.config.defaultAgent;
+    const sessionName = `tako-${agent}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    // Build command args for interactive mode
-    let command: string;
-    let args: string[];
-
-    if (backend === 'claude') {
-      command = 'claude';
-      args = ['--dangerously-skip-permissions'];
-      if (opts?.model) {
-        args.push('--model', opts.model);
-      }
-    } else {
-      command = 'codex';
-      args = ['--quiet', '-a', 'full-auto'];
-    }
-
-    const child = spawn(command, args, {
+    // Ensure session via runtime
+    const handle = await this.runtime.ensureSession({
+      sessionKey: sessionName,
+      agent,
       cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env },
+      mode: 'persistent',
     });
 
     const session: AcpSession = {
-      id,
-      backend,
-      pid: child.pid ?? 0,
+      id: sessionName,
+      agent,
       cwd,
       status: 'running',
       startedAt: Date.now(),
       label: opts?.label ?? task.slice(0, 80),
       agentId,
+      handle,
       messages: [{ role: 'user', content: task, timestamp: Date.now() }],
     };
 
-    const sp: SessionProcess = {
-      session,
-      process: child,
-      outputBuffer: '',
-      lastActivity: Date.now(),
-    };
+    this.sessions.set(sessionName, session);
 
-    // Buffer stdout
-    child.stdout?.on('data', (data: Buffer) => {
-      sp.outputBuffer += data.toString();
-      sp.lastActivity = Date.now();
-    });
-
-    // Buffer stderr
-    child.stderr?.on('data', (data: Buffer) => {
-      sp.outputBuffer += data.toString();
-      sp.lastActivity = Date.now();
-    });
-
-    // Handle exit
-    child.on('exit', (code) => {
-      session.status = code === 0 ? 'completed' : 'failed';
-      if (sp.outputBuffer.length > 0) {
-        session.messages.push({
-          role: 'assistant',
-          content: sp.outputBuffer,
-          timestamp: Date.now(),
-        });
-      }
-      this.persistMetadata();
-    });
-
-    child.on('error', () => {
-      session.status = 'failed';
-      this.persistMetadata();
-    });
-
-    this.processes.set(id, sp);
-
-    // Send the initial task via stdin
-    child.stdin?.write(task + '\n');
+    // Run the initial turn in the background
+    void this.runTurnBackground(session, task);
 
     await this.persistMetadata();
     return session;
@@ -160,72 +114,87 @@ export class AcpSessionManager {
   /**
    * Send a follow-up message to a running session.
    */
-  async send(sessionId: string, message: string): Promise<{ success: boolean; error?: string }> {
-    const sp = this.processes.get(sessionId);
-    if (!sp) return { success: false, error: `Session ${sessionId} not found` };
-    if (sp.session.status !== 'running') {
-      return { success: false, error: `Session ${sessionId} is ${sp.session.status}` };
+  async send(
+    sessionId: string,
+    message: string,
+  ): Promise<{ success: boolean; output?: string; error?: string }> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return { success: false, error: `Session ${sessionId} not found` };
+    if (session.status !== 'running') {
+      return { success: false, error: `Session ${sessionId} is ${session.status}` };
     }
 
-    // Capture any output since last message as assistant response
-    if (sp.outputBuffer.length > 0) {
-      sp.session.messages.push({
+    session.messages.push({ role: 'user', content: message, timestamp: Date.now() });
+
+    // Run the turn and collect output
+    try {
+      let output = '';
+      for await (const event of this.runtime.runTurn({
+        handle: session.handle,
+        text: message,
+      })) {
+        output += collectEventText(event);
+      }
+
+      session.messages.push({
         role: 'assistant',
-        content: sp.outputBuffer,
+        content: output,
         timestamp: Date.now(),
       });
-      sp.outputBuffer = '';
+
+      await this.persistMetadata();
+      return { success: true, output };
+    } catch (err: unknown) {
+      session.status = 'failed';
+      await this.persistMetadata();
+      return { success: false, error: (err as Error).message };
     }
-
-    // Send the new message
-    sp.session.messages.push({ role: 'user', content: message, timestamp: Date.now() });
-    sp.process.stdin?.write(message + '\n');
-    sp.lastActivity = Date.now();
-
-    await this.persistMetadata();
-    return { success: true };
   }
 
   /**
-   * Get the status and latest output of a session.
+   * Get the status of a session via the acpx runtime.
    */
-  getStatus(sessionId: string): {
+  async getStatus(sessionId: string): Promise<{
     session: AcpSession | null;
-    latestOutput: string;
-  } {
-    const sp = this.processes.get(sessionId);
-    if (!sp) return { session: null, latestOutput: '' };
+    runtimeStatus: string;
+  }> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return { session: null, runtimeStatus: '' };
 
-    return {
-      session: { ...sp.session },
-      latestOutput: sp.outputBuffer,
-    };
+    try {
+      const status = await this.runtime.getStatus({ handle: session.handle });
+      return { session: { ...session }, runtimeStatus: status.summary };
+    } catch {
+      return { session: { ...session }, runtimeStatus: 'status unavailable' };
+    }
   }
 
   /**
-   * List all tracked sessions (running and completed).
+   * List all tracked sessions.
    */
   list(): AcpSession[] {
-    return Array.from(this.processes.values()).map((sp) => ({ ...sp.session }));
+    return Array.from(this.sessions.values()).map((s) => ({ ...s }));
   }
 
   /**
-   * Kill a running session.
+   * Cancel and close a running session.
    */
   async kill(sessionId: string): Promise<boolean> {
-    const sp = this.processes.get(sessionId);
-    if (!sp) return false;
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
 
-    if (sp.session.status === 'running') {
-      sp.process.kill('SIGTERM');
-      // Give it 3s to exit gracefully, then force kill
-      setTimeout(() => {
-        if (sp.session.status === 'running') {
-          sp.process.kill('SIGKILL');
-          sp.session.status = 'failed';
-        }
-      }, 3000).unref();
-      sp.session.status = 'completed';
+    if (session.status === 'running') {
+      try {
+        await this.runtime.cancel({ handle: session.handle, reason: 'user-kill' });
+      } catch {
+        // Best-effort cancel
+      }
+      try {
+        await this.runtime.close({ handle: session.handle, reason: 'user-kill' });
+      } catch {
+        // Best-effort close
+      }
+      session.status = 'completed';
     }
 
     await this.persistMetadata();
@@ -233,56 +202,33 @@ export class AcpSessionManager {
   }
 
   /**
-   * Get full output log for a session.
+   * Get full message log for a session.
    */
   getLogs(sessionId: string): string {
-    const sp = this.processes.get(sessionId);
-    if (!sp) return '';
+    const session = this.sessions.get(sessionId);
+    if (!session) return '';
 
-    const lines: string[] = [];
-    for (const msg of sp.session.messages) {
-      const ts = new Date(msg.timestamp).toISOString();
-      const contentStr = msg.content == null
-        ? ''
-        : typeof msg.content === 'string'
-          ? msg.content
-          : JSON.stringify(msg.content);
-      lines.push(`[${ts}] ${msg.role}: ${contentStr}`);
-    }
-    // Append any unbuffered output
-    if (sp.outputBuffer.length > 0) {
-      lines.push(`[pending output] ${sp.outputBuffer}`);
-    }
-    return lines.join('\n');
+    return session.messages
+      .map((msg) => {
+        const ts = new Date(msg.timestamp).toISOString();
+        const contentStr =
+          msg.content == null
+            ? ''
+            : typeof msg.content === 'string'
+              ? msg.content
+              : JSON.stringify(msg.content);
+        return `[${ts}] ${msg.role}: ${contentStr}`;
+      })
+      .join('\n');
   }
 
   /**
-   * Kill sessions that have exceeded the timeout.
+   * Clean up all sessions on shutdown.
    */
-  private cleanupStale(): void {
-    const timeoutMs = this.config.defaultTimeout * 1000;
-    const now = Date.now();
-
-    for (const [id, sp] of this.processes) {
-      if (sp.session.status !== 'running') continue;
-      if (now - sp.session.startedAt > timeoutMs) {
-        sp.process.kill('SIGTERM');
-        sp.session.status = 'timeout';
-        console.log(`[acp] Session ${id} timed out after ${this.config.defaultTimeout}s`);
-      }
-    }
-  }
-
-  /**
-   * Persist session metadata to disk.
-   */
-  private async persistMetadata(): Promise<void> {
-    try {
-      await mkdir(SESSIONS_DIR, { recursive: true });
-      const sessions = this.list();
-      await writeFile(SESSIONS_FILE, JSON.stringify(sessions, null, 2), 'utf-8');
-    } catch {
-      // Best-effort persistence
+  async shutdown(): Promise<void> {
+    this.stopCleanup();
+    for (const [id] of this.sessions) {
+      await this.kill(id);
     }
   }
 
@@ -291,55 +237,96 @@ export class AcpSessionManager {
    */
   static async loadPersistedSessions(): Promise<AcpSession[]> {
     try {
-      const raw = await readFile(SESSIONS_FILE, 'utf-8');
+      const raw = await readFile(getSessionsFile(), 'utf-8');
       return JSON.parse(raw) as AcpSession[];
     } catch {
       return [];
     }
   }
 
-  /**
-   * Clean up all sessions on shutdown.
-   */
-  async shutdown(): Promise<void> {
-    this.stopCleanup();
-    for (const [id] of this.processes) {
-      await this.kill(id);
+  // ─── Private ────────────────────────────────────────────────
+
+  private async runTurnBackground(session: AcpSession, text: string): Promise<void> {
+    try {
+      let output = '';
+      for await (const event of this.runtime.runTurn({
+        handle: session.handle,
+        text,
+      })) {
+        output += collectEventText(event);
+      }
+
+      session.messages.push({
+        role: 'assistant',
+        content: output,
+        timestamp: Date.now(),
+      });
+    } catch {
+      session.status = 'failed';
+    }
+    await this.persistMetadata();
+  }
+
+  private async cleanupStale(): Promise<void> {
+    const timeoutMs = this.config.timeoutSeconds * 1000;
+    const now = Date.now();
+
+    for (const [id, session] of this.sessions) {
+      if (session.status !== 'running') continue;
+      if (now - session.startedAt > timeoutMs) {
+        try {
+          await this.runtime.cancel({ handle: session.handle, reason: 'timeout' });
+          await this.runtime.close({ handle: session.handle, reason: 'timeout' });
+        } catch {
+          // Best-effort cleanup
+        }
+        session.status = 'timeout';
+        console.log(`[acp] Session ${id} timed out after ${this.config.timeoutSeconds}s`);
+      }
+    }
+  }
+
+  private async persistMetadata(): Promise<void> {
+    try {
+      await mkdir(getSessionsDir(), { recursive: true });
+      const sessions = this.list();
+      await writeFile(getSessionsFile(), JSON.stringify(sessions, null, 2), 'utf-8');
+    } catch {
+      // Best-effort persistence
     }
   }
 }
 
-// ─── Tools ──────────────────────────────────────────────────────────
+// ─── Tools ──────────────────────────────────────────────────────
 
 /** Create persistent ACP session tools. */
 export function createAcpSessionTools(manager: AcpSessionManager): Tool[] {
   const sessionStart: Tool = {
     name: 'acp_session_start',
-    description: 'Start a persistent Claude Code session. Returns session ID for follow-up messages.',
+    description: 'Start a persistent ACP coding agent session. Returns session ID for follow-up messages.',
     group: 'runtime',
     parameters: {
       type: 'object',
       properties: {
         task: { type: 'string', description: 'Initial task for the coding agent' },
         cwd: { type: 'string', description: 'Working directory (defaults to current)' },
-        model: { type: 'string', description: 'Model override' },
+        agent: { type: 'string', description: 'Agent to use (claude, codex, pi, etc.)' },
         label: { type: 'string', description: 'Short label for this session' },
       },
       required: ['task'],
     },
     async execute(params: unknown, ctx: ToolContext): Promise<ToolResult> {
-      const { task, cwd, model, label } = params as {
-        task: string; cwd?: string; model?: string; label?: string;
+      const { task, cwd, agent, label } = params as {
+        task: string; cwd?: string; agent?: string; label?: string;
       };
-
       try {
         const session = await manager.start(task, ctx.agentId ?? 'unknown', {
           cwd: cwd ?? ctx.workDir,
-          model,
+          agent,
           label,
         });
         return {
-          output: `ACP session started.\nSession ID: ${session.id}\nPID: ${session.pid}\nBackend: ${session.backend}\nLabel: ${session.label}`,
+          output: `ACP session started.\nSession ID: ${session.id}\nAgent: ${session.agent}\nLabel: ${session.label}`,
           success: true,
           data: { sessionId: session.id },
         };
@@ -371,7 +358,10 @@ export function createAcpSessionTools(manager: AcpSessionManager): Tool[] {
       if (!result.success) {
         return { output: '', success: false, error: result.error };
       }
-      return { output: `Message sent to session ${sessionId}`, success: true };
+      const truncated = result.output && result.output.length > 5000
+        ? result.output.slice(0, 5000) + '\n[... truncated]'
+        : result.output ?? '';
+      return { output: `Message sent to session ${sessionId}\n\n${truncated}`, success: true };
     },
   };
 
@@ -389,25 +379,19 @@ export function createAcpSessionTools(manager: AcpSessionManager): Tool[] {
       const { sessionId } = params as { sessionId?: string };
 
       if (sessionId) {
-        const { session, latestOutput } = manager.getStatus(sessionId);
+        const { session, runtimeStatus } = await manager.getStatus(sessionId);
         if (!session) {
           return { output: '', success: false, error: `Session ${sessionId} not found` };
         }
         const lines = [
           `Session: ${session.id}`,
           `Status: ${session.status}`,
-          `Backend: ${session.backend}`,
-          `PID: ${session.pid}`,
+          `Agent: ${session.agent}`,
           `Label: ${session.label ?? '(none)'}`,
           `Started: ${new Date(session.startedAt).toISOString()}`,
           `Messages: ${session.messages.length}`,
+          `Runtime: ${runtimeStatus}`,
         ];
-        if (latestOutput) {
-          const truncated = latestOutput.length > 5000
-            ? latestOutput.slice(-5000) + '\n[... truncated]'
-            : latestOutput;
-          lines.push('', 'Latest output:', truncated);
-        }
         return { output: lines.join('\n'), success: true };
       }
 
@@ -417,7 +401,7 @@ export function createAcpSessionTools(manager: AcpSessionManager): Tool[] {
         return { output: 'No active ACP sessions.', success: true };
       }
       const lines = sessions.map((s) =>
-        `${s.id} [${s.status}] ${s.backend} — ${s.label ?? '(no label)'} (${s.messages.length} msgs)`,
+        `${s.id} [${s.status}] ${s.agent} — ${s.label ?? '(no label)'} (${s.messages.length} msgs)`,
       );
       return { output: lines.join('\n'), success: true };
     },
@@ -435,9 +419,12 @@ export function createAcpSessionTools(manager: AcpSessionManager): Tool[] {
       }
       const lines = sessions.map((s) => {
         const elapsed = Math.round((Date.now() - s.startedAt) / 1000);
-        return `${s.id}  ${s.status.padEnd(10)} ${s.backend.padEnd(6)} ${elapsed}s  ${s.label ?? ''}`;
+        return `${s.id}  ${s.status.padEnd(10)} ${s.agent.padEnd(8)} ${elapsed}s  ${s.label ?? ''}`;
       });
-      return { output: `ID        Status     Backend Elapsed  Label\n${lines.join('\n')}`, success: true };
+      return {
+        output: `ID        Status     Agent    Elapsed  Label\n${lines.join('\n')}`,
+        success: true,
+      };
     },
   };
 
@@ -463,4 +450,19 @@ export function createAcpSessionTools(manager: AcpSessionManager): Tool[] {
   };
 
   return [sessionStart, sessionSend, sessionStatus, sessionList, sessionKill];
+}
+
+// ─── Helpers ────────────────────────────────────────────────────
+
+function collectEventText(event: AcpRuntimeEvent): string {
+  switch (event.type) {
+    case 'text_delta':
+      return event.text;
+    case 'tool_call':
+      return `\n[tool: ${event.text}]\n`;
+    case 'error':
+      return `\n[error: ${event.message}]\n`;
+    default:
+      return '';
+  }
 }

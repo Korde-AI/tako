@@ -6,30 +6,31 @@
  */
 
 import { readFile, writeFile, unlink, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
-
-const TAKO_DIR = join(homedir(), '.tako');
-const PID_PATH = join(TAKO_DIR, 'tako.pid');
+import { dirname } from 'node:path';
+import { getRuntimePaths } from '../core/paths.js';
 
 export interface DaemonInfo {
   pid: number;
   startedAt: string;
   port: number;
   bind: string;
+  mode?: 'edge' | 'hub';
+  home?: string;
+  nodeId?: string;
   configPath?: string;
 }
 
 /** Write daemon info to PID file. */
 export async function writePidFile(info: DaemonInfo): Promise<void> {
-  await mkdir(TAKO_DIR, { recursive: true });
-  await writeFile(PID_PATH, JSON.stringify(info, null, 2));
+  const pidPath = getRuntimePaths().pidFile;
+  await mkdir(dirname(pidPath), { recursive: true });
+  await writeFile(pidPath, JSON.stringify(info, null, 2));
 }
 
 /** Read daemon info from PID file. Returns null if not found. */
 export async function readPidFile(): Promise<DaemonInfo | null> {
   try {
-    const content = await readFile(PID_PATH, 'utf-8');
+    const content = await readFile(getRuntimePaths().pidFile, 'utf-8');
     return JSON.parse(content) as DaemonInfo;
   } catch {
     return null;
@@ -39,7 +40,7 @@ export async function readPidFile(): Promise<DaemonInfo | null> {
 /** Remove the PID file. */
 export async function removePidFile(): Promise<void> {
   try {
-    await unlink(PID_PATH);
+    await unlink(getRuntimePaths().pidFile);
   } catch {
     // Already gone — fine
   }
@@ -76,5 +77,5 @@ export async function getDaemonStatus(): Promise<{
 
 /** Get the PID file path (for display). */
 export function getPidPath(): string {
-  return PID_PATH;
+  return getRuntimePaths().pidFile;
 }

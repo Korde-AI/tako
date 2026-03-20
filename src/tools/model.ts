@@ -3,10 +3,9 @@
  */
 
 import { readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import type { Tool, ToolResult, ToolContext } from './tool.js';
+import { getRuntimePaths } from '../core/paths.js';
 
 /**
  * Create the set_model tool.
@@ -51,7 +50,7 @@ export function createModelTool(deps: {
       deps.setModel(model);
 
       // Persist to tako.json
-      const configPath = join(homedir(), '.tako', 'tako.json');
+      const configPath = getRuntimePaths().configFile;
       if (existsSync(configPath)) {
         try {
           const raw = await readFile(configPath, 'utf-8');

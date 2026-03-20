@@ -10,7 +10,6 @@
  */
 
 import * as p from '@clack/prompts';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -19,6 +18,7 @@ import { DEFAULT_CONFIG } from '../config/schema.js';
 import { writeAuthCredential, getAuthStatus, type ApiKeyCredential, type SetupTokenCredential } from '../auth/storage.js';
 import { validateAnthropicSetupToken, runOAuthFlow, OAUTH_PROVIDERS } from '../auth/oauth.js';
 import { LiteLLMProvider } from '../providers/litellm.js';
+import { getRuntimePaths } from '../core/paths.js';
 
 // ─── Provider definitions ────────────────────────────────────────────
 
@@ -233,8 +233,9 @@ interface ConfiguredProvider {
 // ─── Main onboard flow ──────────────────────────────────────────────
 
 export async function runOnboard(): Promise<void> {
-  const takoDir = join(homedir(), '.tako');
-  const configPath = join(takoDir, 'tako.json');
+  const paths = getRuntimePaths();
+  const takoDir = paths.home;
+  const configPath = paths.configFile;
 
   p.intro('◉‿◉ Tako Setup');
 
@@ -244,7 +245,7 @@ export async function runOnboard(): Promise<void> {
     try {
       existingConfig = JSON.parse(await readFile(configPath, 'utf-8')) as Partial<TakoConfig>;
     } catch { /* ignore invalid config */ }
-    p.log.info('Found existing config at ~/.tako/tako.json — you can update it.');
+    p.log.info(`Found existing config at ${configPath} — you can update it.`);
   }
 
   // ── Step 1: Multi-provider dashboard ──────────────────────────────
@@ -591,7 +592,7 @@ export async function runOnboard(): Promise<void> {
       ...(telegramConfig ? { telegram: telegramConfig } : {}),
     },
     memory: {
-      workspace: '~/.tako/workspace',
+      workspace: 'workspace',
     },
   };
 
@@ -613,7 +614,7 @@ export async function runOnboard(): Promise<void> {
   await writeFile(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
 
   // Bootstrap workspace
-  const workspaceDir = join(takoDir, 'workspace');
+  const workspaceDir = paths.workspaceDir;
   await mkdir(workspaceDir, { recursive: true });
   await mkdir(join(workspaceDir, 'memory', 'daily'), { recursive: true });
   await mkdir(join(workspaceDir, '.sessions'), { recursive: true });
@@ -667,7 +668,7 @@ ${traitSection}
   await writeFile(join(workspaceDir, 'IDENTITY.md'), identityMd, 'utf-8');
   await writeFile(join(workspaceDir, 'USER.md'), userMd, 'utf-8');
 
-  writeSpinner.stop('Config saved to ~/.tako/tako.json');
+  writeSpinner.stop(`Config saved to ${configPath}`);
 
   // ── Welcome outro ─────────────────────────────────────────────────
 
@@ -696,7 +697,26 @@ ${traitSection}
       ].join('\n'),
     );
   } else {
-    p.outro("Run 'tako start' to begin chatting! 🐙");
+    // Check if a Tako daemon is already running — offer restart
+    const { getDaemonStatus } = await import('../daemon/pid.js');
+    const daemonStatus = await getDaemonStatus();
+
+    if (daemonStatus.running && daemonStatus.info?.pid) {
+      const shouldRestart = await p.confirm({
+        message: `Tako is currently running (PID ${daemonStatus.info.pid}). Restart to apply new config?`,
+        initialValue: true,
+      });
+
+      if (!p.isCancel(shouldRestart) && shouldRestart) {
+        const { runRestart } = await import('../daemon/commands.js');
+        await runRestart();
+        p.outro('Tako restarted with new config! 🐙');
+      } else {
+        p.outro("Config saved. Run 'tako restart' to apply changes. 🐙");
+      }
+    } else {
+      p.outro("Run 'tako start' to begin chatting! 🐙");
+    }
   }
 }
 
@@ -846,8 +866,8 @@ async function configureProvider(providerId: string): Promise<ConfiguredProvider
     await writeAuthCredential(credential);
 
     // Also write to .env for backward compat
-    const takoDir = join(homedir(), '.tako');
-    const envPath = join(takoDir, '.env');
+    const paths = getRuntimePaths();
+    const envPath = paths.envFile;
     let envContent = '';
     if (existsSync(envPath)) {
       envContent = await readFile(envPath, 'utf-8');
@@ -859,7 +879,7 @@ async function configureProvider(providerId: string): Promise<ConfiguredProvider
     } else {
       envContent = envContent ? envContent.trimEnd() + '\n' + envLine + '\n' : envLine + '\n';
     }
-    await mkdir(takoDir, { recursive: true });
+    await mkdir(paths.home, { recursive: true });
     await writeFile(envPath, envContent, 'utf-8');
   }
 

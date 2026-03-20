@@ -8,6 +8,7 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
+import { getRuntimePaths } from './paths.js';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -36,7 +37,7 @@ export class SecretsManager {
       backend: config.backend ?? 'file',
       path: config.path,
     };
-    this.storePath = this.config.path ?? join(process.env.HOME ?? '/tmp', '.tako', 'secrets.enc');
+    this.storePath = this.config.path ?? join(getRuntimePaths().home, 'secrets.enc');
     // Derive encryption key from hostname + username (machine-bound)
     const salt = `tako-secrets-${process.env.USER ?? 'default'}`;
     this.encryptionKey = scryptSync(salt, 'tako', 32);

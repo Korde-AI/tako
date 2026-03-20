@@ -7,15 +7,15 @@
  * Returns a local file path so the agent can access media offline.
  */
 
-import { homedir } from 'node:os';
 import { join, extname } from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
 import type { Attachment } from '../channels/channel.js';
+import { getRuntimePaths } from '../core/paths.js';
 
 // ─── Paths ──────────────────────────────────────────────────────────
 
 function getInboundDir(): string {
-  return join(homedir(), '.tako', 'media', 'inbound');
+  return join(getRuntimePaths().mediaDir, 'inbound');
 }
 
 // ─── Init ───────────────────────────────────────────────────────────

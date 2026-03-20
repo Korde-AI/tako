@@ -25,7 +25,7 @@ export interface SymphonyConfig {
   stallTimeoutMs?: number;
   /** Max retry backoff in ms. Default: 300000 (5min). */
   maxRetryBackoffMs?: number;
-  /** Workspace root directory. Default: ~/.tako/symphony-workspaces. */
+  /** Workspace root directory. Default: <home>/symphony-workspaces. */
   workspaceRoot?: string;
   /** Path to WORKFLOW.md. Default: WORKFLOW.md in repo root. */
   workflowPath?: string;

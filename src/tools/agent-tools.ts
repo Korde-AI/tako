@@ -13,6 +13,10 @@ import type { SubAgentOrchestrator, SubAgentMode } from '../agents/subagent.js';
 import type { SessionManager } from '../gateway/session.js';
 import type { ThreadBindingManager } from '../core/thread-bindings.js';
 import type { DiscordChannel } from '../channels/discord.js';
+import type { AcpxRuntime, AcpRuntimeHandle } from '../acp/runtime.js';
+import type { AcpRuntimeConfig } from '../acp/config.js';
+import type { AcpRuntimeEvent } from '../acp/events.js';
+import { randomUUID } from 'node:crypto';
 import { PREDEFINED_ROLES } from '../agents/roles.js';
 
 export interface AgentToolsDeps {
@@ -20,13 +24,25 @@ export interface AgentToolsDeps {
   orchestrator: SubAgentOrchestrator;
   sessions: SessionManager;
   threadBindings?: ThreadBindingManager;
+  acpRuntime?: AcpxRuntime;
+  acpConfig?: AcpRuntimeConfig;
 }
+
+/**
+ * In-memory store for ACP session handles, keyed by session key.
+ * Used to route follow-up messages in bound threads to the correct ACP session.
+ */
+export const acpSessionHandles = new Map<string, {
+  handle: AcpRuntimeHandle;
+  agentId: string;
+  cwd: string;
+}>();
 
 /**
  * Create agent management tools bound to a registry and orchestrator.
  */
 export function createAgentTools(deps: AgentToolsDeps): Tool[] {
-  const { registry, orchestrator, sessions, threadBindings } = deps;
+  const { registry, orchestrator, sessions, threadBindings, acpRuntime, acpConfig } = deps;
 
   // ─── agents_list ───────────────────────────────────────────────────
 
@@ -95,18 +111,26 @@ export function createAgentTools(deps: AgentToolsDeps): Tool[] {
   const sessionsSpawnTool: Tool = {
     name: 'sessions_spawn',
     description:
-      'Spawn an isolated sub-agent session. Use mode "run" for one-shot tasks (execute and return result) or "session" for persistent sessions that can receive follow-up messages.',
+      'Spawn an isolated session. runtime="subagent" (default) runs within Tako. ' +
+      'runtime="acp" uses an external coding agent (Claude Code, Codex, etc.) via acpx. ' +
+      'Use mode "run" for one-shot tasks or "session" for persistent thread-bound sessions.',
     group: 'agents',
     parameters: {
       type: 'object',
       properties: {
         task: {
           type: 'string',
-          description: 'Task description or initial message for the sub-agent',
+          description: 'Task description or initial message for the agent',
+        },
+        runtime: {
+          type: 'string',
+          enum: ['subagent', 'acp'],
+          description: 'Runtime type: "subagent" (default) or "acp" for external coding agent',
+          default: 'subagent',
         },
         agentId: {
           type: 'string',
-          description: 'Agent ID to use (defaults to "main")',
+          description: 'Agent ID. For runtime="acp": claude, codex, pi, opencode, gemini, kimi',
         },
         mode: {
           type: 'string',
@@ -116,11 +140,15 @@ export function createAgentTools(deps: AgentToolsDeps): Tool[] {
         },
         label: {
           type: 'string',
-          description: 'Human-readable label for tracking this sub-agent',
+          description: 'Human-readable label for tracking',
         },
         model: {
           type: 'string',
           description: 'Model override (e.g. "anthropic/claude-opus-4-6")',
+        },
+        cwd: {
+          type: 'string',
+          description: 'Working directory for ACP sessions',
         },
         thread: {
           type: 'boolean',
@@ -128,7 +156,7 @@ export function createAgentTools(deps: AgentToolsDeps): Tool[] {
         },
         threadName: {
           type: 'string',
-          description: 'Thread name (default: 🐙 <agentId>)',
+          description: 'Thread name (default: 🔧 <agentId>)',
         },
       },
       required: ['task'],
@@ -137,21 +165,33 @@ export function createAgentTools(deps: AgentToolsDeps): Tool[] {
     async execute(params: unknown, ctx: ToolContext): Promise<ToolResult> {
       const {
         task,
+        runtime = 'subagent',
         agentId,
         mode = 'run',
         label,
         model,
+        cwd,
         thread,
         threadName,
       } = params as {
         task: string;
+        runtime?: 'subagent' | 'acp';
         agentId?: string;
         mode?: SubAgentMode;
         label?: string;
         model?: string;
+        cwd?: string;
         thread?: boolean;
         threadName?: string;
       };
+
+      // ─── ACP runtime path ──────────────────────────────────────────
+      if (runtime === 'acp') {
+        return await spawnAcpSession({
+          task, agentId, mode, label, cwd, thread, threadName,
+          ctx, registry, threadBindings, acpRuntime, acpConfig,
+        });
+      }
 
       // Validate agent exists if specified
       if (agentId && !registry.has(agentId)) {
@@ -739,4 +779,293 @@ function hasToolUse(msg: { content: string | unknown[] }): boolean {
   return msg.content.some(
     (part: unknown) => typeof part === 'object' && part !== null && (part as Record<string, unknown>).type === 'tool_use',
   );
+}
+
+// ─── ACP Spawn Logic ─────────────────────────────────────────────────
+
+interface AcpSpawnParams {
+  task: string;
+  agentId?: string;
+  mode: SubAgentMode;
+  label?: string;
+  cwd?: string;
+  thread?: boolean;
+  threadName?: string;
+  ctx: ToolContext;
+  registry: AgentRegistry;
+  threadBindings?: ThreadBindingManager;
+  acpRuntime?: AcpxRuntime;
+  acpConfig?: AcpRuntimeConfig;
+}
+
+async function spawnAcpSession(params: AcpSpawnParams): Promise<ToolResult> {
+  const { task, mode, label, cwd, thread, threadName, ctx, acpRuntime, acpConfig } = params;
+
+  console.log(`[acp-spawn] Starting: agent=${params.agentId ?? acpConfig?.defaultAgent}, thread=${thread}, mode=${mode}, channelType=${ctx.channelType}, channelTarget=${ctx.channelTarget}, hasChannel=${!!ctx.channel}`);
+
+  if (!acpConfig?.enabled) {
+    console.log('[acp-spawn] Blocked: ACP disabled');
+    return { output: '', success: false, error: 'ACP integration is disabled.' };
+  }
+  if (!acpRuntime?.isHealthy()) {
+    console.log('[acp-spawn] Blocked: ACP runtime unhealthy');
+    return { output: '', success: false, error: 'ACP runtime (acpx) is not available. Ensure acpx is installed.' };
+  }
+
+  const agentId = params.agentId ?? acpConfig.defaultAgent;
+  if (!acpConfig.allowedAgents.includes(agentId)) {
+    return {
+      output: '', success: false,
+      error: `Agent '${agentId}' not allowed. Allowed: ${acpConfig.allowedAgents.join(', ')}`,
+    };
+  }
+
+  const sessionKey = `agent:${agentId}:acp:${randomUUID()}`;
+  const workDir = cwd ?? ctx.workDir;
+  const runtimeMode = mode === 'session' ? 'persistent' : 'oneshot';
+
+  try {
+    // Ensure ACP session
+    console.log(`[acp-spawn] Calling ensureSession: key=${sessionKey}, agent=${agentId}, cwd=${workDir}`);
+    const handle = await acpRuntime.ensureSession({
+      sessionKey,
+      agent: agentId,
+      cwd: workDir,
+      mode: runtimeMode,
+    });
+    console.log(`[acp-spawn] ensureSession OK: handle=${!!handle}`);
+
+    // Store handle for follow-up routing
+    acpSessionHandles.set(sessionKey, { handle, agentId, cwd: workDir });
+
+    // ─── Thread binding (Discord only) ──────────────────────────
+    let threadInfo: { threadId: string; threadName: string } | undefined;
+
+    if (thread && ctx.channelType === 'discord' && ctx.channelTarget && ctx.channel) {
+      const discordChannel = ctx.channel as DiscordChannel;
+      const name = threadName ?? `🔧 ${label || agentId}`;
+
+      try {
+        const anchorMessageId = await discordChannel.sendToChannel(
+          ctx.channelTarget,
+          `🔧 Spawning ACP session **${agentId}** in thread…`,
+        );
+        const created = await discordChannel.createThread(
+          ctx.channelTarget,
+          name,
+          { messageId: anchorMessageId },
+        );
+
+        threadInfo = { threadId: created.id, threadName: created.name };
+
+        // Post intro message
+        await discordChannel.send({
+          target: created.id,
+          content: [
+            `🔧 **ACP Session Started**`,
+            `Agent: \`${agentId}\``,
+            `Working dir: \`${workDir}\``,
+            `Mode: ${mode}`,
+            `Session: \`${sessionKey}\``,
+            '',
+            `Task: ${task.slice(0, 200)}${task.length > 200 ? '…' : ''}`,
+          ].join('\n'),
+        });
+
+        // Bind thread to ACP session
+        if (params.threadBindings) {
+          params.threadBindings.bind(created.id, {
+            threadId: created.id,
+            parentChannelId: ctx.channelTarget,
+            agentId,
+            sessionKey,
+          });
+          await params.threadBindings.save();
+        }
+
+        // Also key by threadId for quick lookup
+        acpSessionHandles.set(`thread:${created.id}`, { handle, agentId, cwd: workDir });
+      } catch (threadErr) {
+        console.error('[acp] Thread creation failed:', threadErr instanceof Error ? threadErr.message : threadErr);
+      }
+    }
+
+    // ─── Run ACP turn in background ──────────────────────────────
+    const threadId = threadInfo?.threadId;
+    const discordChannel = ctx.channel as DiscordChannel | undefined;
+
+    void runAcpTurnInBackground({
+      runtime: acpRuntime,
+      handle,
+      task,
+      sessionKey,
+      agentId,
+      workDir,
+      mode,
+      threadId,
+      discordChannel,
+    });
+
+    return {
+      output: JSON.stringify({
+        status: 'accepted',
+        childSessionKey: sessionKey,
+        runId: sessionKey,
+        mode,
+        agentId,
+        ...(threadInfo ? { thread: threadInfo } : {}),
+        note: mode === 'session'
+          ? 'thread-bound ACP session stays active after this task; continue in-thread for follow-ups.'
+          : 'ACP task running. Results will be announced when complete.',
+      }, null, 2),
+      success: true,
+    };
+  } catch (err) {
+    return {
+      output: '',
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/** Run an ACP turn in background and post results to Discord thread. */
+async function runAcpTurnInBackground(opts: {
+  runtime: AcpxRuntime;
+  handle: AcpRuntimeHandle;
+  task: string;
+  sessionKey: string;
+  agentId: string;
+  workDir: string;
+  mode: string;
+  threadId?: string;
+  discordChannel?: DiscordChannel;
+}): Promise<void> {
+  const { runtime, handle, task, sessionKey, agentId, workDir, mode, threadId, discordChannel } = opts;
+  const startTime = Date.now();
+
+  try {
+    let output = '';
+    for await (const event of runtime.runTurn({ handle, text: task })) {
+      switch (event.type) {
+        case 'text_delta':
+          output += event.text;
+          break;
+        case 'tool_call':
+          output += `\n[tool: ${event.text}]\n`;
+          break;
+        case 'error':
+          output += `\n[error: ${event.message}]\n`;
+          break;
+      }
+    }
+
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+
+    // Get files changed
+    let filesChanged = '';
+    try {
+      const { exec: execCb } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const execAsync = promisify(execCb);
+      const { stdout } = await execAsync('git diff --name-only', { cwd: workDir, timeout: 5000 });
+      const { stdout: untracked } = await execAsync('git ls-files --others --exclude-standard', { cwd: workDir, timeout: 5000 });
+      const files = [...stdout.split('\n'), ...untracked.split('\n')].filter(Boolean);
+      if (files.length > 0) {
+        filesChanged = `\n\n**Files changed (${files.length}):**\n${files.slice(0, 15).map(f => `• \`${f}\``).join('\n')}`;
+        if (files.length > 15) filesChanged += `\n… and ${files.length - 15} more`;
+      }
+    } catch { /* not a git repo */ }
+
+    // Post completion to thread
+    if (threadId && discordChannel) {
+      const summary = output.length > 1500 ? output.slice(-1500) : output;
+      await discordChannel.send({
+        target: threadId,
+        content: [
+          `✅ **ACP session completed** (${elapsed}s)`,
+          filesChanged,
+          '',
+          summary ? `\`\`\`\n${summary.slice(0, 1800)}\n\`\`\`` : '',
+        ].join('\n').slice(0, 2000),
+      });
+    }
+
+    // Close one-shot sessions
+    if (mode === 'run') {
+      await runtime.close({ handle, reason: 'oneshot-complete' }).catch(() => {});
+      acpSessionHandles.delete(sessionKey);
+    }
+
+    console.log(`[acp] Session ${sessionKey} completed in ${elapsed}s`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[acp] Session ${sessionKey} failed:`, msg);
+
+    if (threadId && discordChannel) {
+      await discordChannel.send({
+        target: threadId,
+        content: `❌ **ACP session failed:** ${msg.slice(0, 500)}`,
+      }).catch(() => {});
+    }
+  }
+}
+
+/**
+ * Handle a follow-up message in an ACP-bound thread.
+ * Called from the main message routing when a thread is bound to an ACP session.
+ */
+export async function handleAcpThreadMessage(
+  sessionKey: string,
+  messageText: string,
+  threadId: string,
+  discordChannel: DiscordChannel,
+  acpRuntime: AcpxRuntime,
+): Promise<boolean> {
+  // Look up by thread first, then by session key
+  const sessionInfo = acpSessionHandles.get(`thread:${threadId}`) ?? acpSessionHandles.get(sessionKey);
+  if (!sessionInfo) return false;
+
+  try {
+    let output = '';
+    for await (const event of acpRuntime.runTurn({
+      handle: sessionInfo.handle,
+      text: messageText,
+    })) {
+      switch (event.type) {
+        case 'text_delta':
+          output += event.text;
+          break;
+        case 'tool_call':
+          output += `\n[tool: ${event.text}]\n`;
+          break;
+        case 'error':
+          output += `\n[error: ${event.message}]\n`;
+          break;
+      }
+    }
+
+    if (output.trim()) {
+      // Split long messages
+      const maxLen = 1900;
+      const text = output.trim();
+      if (text.length <= maxLen) {
+        await discordChannel.send({ target: threadId, content: text });
+      } else {
+        // Send in chunks
+        for (let i = 0; i < text.length; i += maxLen) {
+          await discordChannel.send({ target: threadId, content: text.slice(i, i + maxLen) });
+        }
+      }
+    }
+
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await discordChannel.send({
+      target: threadId,
+      content: `❌ ACP error: ${msg.slice(0, 500)}`,
+    }).catch(() => {});
+    return true;
+  }
 }

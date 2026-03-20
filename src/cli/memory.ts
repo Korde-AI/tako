@@ -6,6 +6,17 @@ import { resolveConfig } from '../config/resolve.js';
 import { HybridMemoryStore } from '../memory/hybrid.js';
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { getRuntimePaths } from '../core/paths.js';
+import {
+  getProjectPrivateMemoryDir,
+  getProjectSharedMemoryDir,
+  getGlobalPrivateMemoryDir,
+} from '../memory/scopes.js';
+
+function getFlag(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  return idx >= 0 ? args[idx + 1] : undefined;
+}
 
 async function countFiles(dir: string, ext: string): Promise<number> {
   let count = 0;
@@ -59,6 +70,21 @@ export async function runMemory(args: string[]): Promise<void> {
       break;
     }
 
+    case 'inspect': {
+      const projectId = getFlag(args, '--project');
+      const principalId = getFlag(args, '--principal');
+      const configPaths = getRuntimePaths();
+      console.log('Memory Roots\n');
+      console.log(`  global-private: ${getGlobalPrivateMemoryDir(config.memory.workspace)}`);
+      if (projectId) {
+        console.log(`  project-shared: ${getProjectSharedMemoryDir(configPaths, projectId)}`);
+        if (principalId) {
+          console.log(`  project-private: ${getProjectPrivateMemoryDir(configPaths, projectId, principalId)}`);
+        }
+      }
+      break;
+    }
+
     case 'status': {
       const workspace = config.memory.workspace;
       console.log('Memory Status\n');
@@ -82,7 +108,7 @@ export async function runMemory(args: string[]): Promise<void> {
 
     default:
       console.error(`Unknown memory subcommand: ${subcommand}`);
-      console.error('Available: search, status');
+      console.error('Available: search, inspect, status');
       process.exit(1);
   }
 }

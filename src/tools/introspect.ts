@@ -11,6 +11,7 @@ import type { Tool, ToolContext, ToolResult } from './tool.js';
 import type { SessionManager } from '../gateway/session.js';
 import type { TakoConfig } from '../config/schema.js';
 import { getLogDir } from '../utils/logger.js';
+import { getRuntimePaths } from '../core/paths.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
@@ -234,8 +235,7 @@ export function createIntrospectTools(opts: IntrospectOpts): Tool[] {
       // Try to find the file in any agent session dir
       const session = sessions.get(sessionId);
       const agentId = (session?.metadata.agentId as string) ?? 'main';
-      const homeDir = (await import('node:os')).homedir();
-      const filePath = join(homeDir, '.tako', 'agents', agentId, 'sessions', `${sessionId}.jsonl`);
+      const filePath = join(getRuntimePaths().agentsDir, agentId, 'sessions', `${sessionId}.jsonl`);
 
       let content: string;
       try {

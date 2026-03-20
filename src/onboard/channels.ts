@@ -10,16 +10,15 @@
  */
 
 import * as p from '@clack/prompts';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type { TakoConfig } from '../config/schema.js';
+import { getRuntimePaths } from '../core/paths.js';
 
 // ─── Config helpers ──────────────────────────────────────────────────
 
 function getConfigPath(): string {
-  return join(homedir(), '.tako', 'tako.json');
+  return getRuntimePaths().configFile;
 }
 
 async function loadConfigFile(): Promise<Partial<TakoConfig>> {
@@ -31,6 +30,7 @@ async function loadConfigFile(): Promise<Partial<TakoConfig>> {
 
 async function saveConfigFile(config: Partial<TakoConfig>): Promise<void> {
   const configPath = getConfigPath();
+  await mkdir(getRuntimePaths().home, { recursive: true });
   await writeFile(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
 }
 
@@ -195,7 +195,7 @@ async function channelsAdd(channel?: string): Promise<void> {
   }
 
   await saveConfigFile(config);
-  console.log(`\n${channel} channel configured and saved to ~/.tako/tako.json`);
+  console.log(`\n${channel} channel configured and saved to ${getConfigPath()}`);
 }
 
 async function channelsRemove(channel?: string): Promise<void> {

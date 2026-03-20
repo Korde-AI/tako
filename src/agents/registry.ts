@@ -8,17 +8,14 @@
 import { mkdir, rm, readdir, writeFile, readFile, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 import type { AgentsConfig, AgentEntry } from '../config/schema.js';
 import type { AgentDescriptor } from './config.js';
 import { generateWorkspaceTemplates } from './templates.js';
+import { expandHomePath, getRuntimePaths } from '../core/paths.js';
 
 /** Expand ~ to home directory. */
 function expandHome(p: string): string {
-  if (p.startsWith('~/') || p === '~') {
-    return join(homedir(), p.slice(1));
-  }
-  return p;
+  return expandHomePath(p);
 }
 
 export class AgentRegistry {
@@ -28,7 +25,7 @@ export class AgentRegistry {
   private defaultWorkspace: string;
 
   constructor(config: AgentsConfig, defaultModel: string) {
-    this.baseDir = expandHome('~/.tako/agents');
+    this.baseDir = getRuntimePaths().agentsDir;
     this.defaultModel = defaultModel;
     this.defaultWorkspace = expandHome(config.defaults.workspace);
 

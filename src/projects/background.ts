@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { NetworkSharedSession } from '../network/shared-sessions.js';
 import type { SharedSession } from '../sessions/shared.js';
-import type { Project, ProjectArtifact, ProjectBackgroundSnapshot, ProjectWorktree } from './types.js';
+import type { Project, ProjectArtifact, ProjectBackgroundSnapshot, ProjectRole, ProjectWorktree } from './types.js';
 
 export class ProjectBackgroundRegistry {
   private loaded = false;
@@ -37,15 +37,26 @@ export class ProjectBackgroundRegistry {
     reason: string;
     sharedSession?: SharedSession | null;
     networkSession?: NetworkSharedSession | null;
+    members: Array<{ principalId: string; displayName?: string; role: ProjectRole }>;
     artifacts: ProjectArtifact[];
     worktrees: Array<ProjectWorktree & { branch?: string; dirty?: boolean }>;
   }): Promise<ProjectBackgroundSnapshot> {
     const participantIds = input.sharedSession?.participantIds ?? [];
     const activeParticipantIds = input.sharedSession?.activeParticipantIds ?? [];
+    const collaborationMode = input.project.collaboration?.mode ?? 'single-user';
+    const roomState = input.project.metadata?.['roomState'] === 'pending_rebind'
+      ? 'pending_rebind'
+      : 'active';
     const summary = [
       `Project ${input.project.displayName} (${input.project.slug})`,
       `Reason: ${input.reason}`,
+      `Mode: ${collaborationMode}`,
+      `Room state: ${roomState}`,
+      `Members: ${input.members.length}`,
       `Participants: ${participantIds.length}`,
+      input.members.length > 0
+        ? `Roles: ${input.members.slice(0, 8).map((member) => `${member.displayName ?? member.principalId}(${member.role})`).join(', ')}`
+        : 'Roles: none',
       input.networkSession ? `Participant nodes: ${input.networkSession.participantNodeIds.join(', ')}` : null,
       input.artifacts.length > 0
         ? `Recent artifacts: ${input.artifacts.slice(0, 5).map((artifact) => `${artifact.name} [${artifact.kind}]`).join(', ')}`
@@ -59,6 +70,8 @@ export class ProjectBackgroundRegistry {
       projectSlug: input.project.slug,
       generatedAt: new Date().toISOString(),
       reason: input.reason,
+      memberCount: input.members.length,
+      members: input.members,
       participantCount: participantIds.length,
       participantIds,
       activeParticipantIds,
@@ -78,6 +91,7 @@ export class ProjectBackgroundRegistry {
         dirty: worktree.dirty,
       })),
       summary,
+      roomState,
     });
   }
 

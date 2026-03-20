@@ -5,8 +5,8 @@
  * into a specific agent: identity, skills, workspace templates, and config.
  *
  * Design principles:
- *   - Mods never touch the main workspace (~/.tako/workspace)
- *   - Each mod gets its own workspace (~/.tako/mods/<name>/workspace)
+ *   - Mods never touch the main workspace (<home>/workspace)
+ *   - Each mod gets its own workspace (<home>/mods/<name>/workspace)
  *   - Channel tokens are NEVER included in mods (user provides their own)
  *   - Mods can be shared as directories, tarballs, or git repos
  *
@@ -16,7 +16,7 @@
  *   skills/           — bundled skills
  *   config.json       — config overrides (provider, tools, agent settings — NO secrets)
  *
- * ~/.tako/mods/
+ * <home>/mods/
  *   active            — file containing the currently active mod name (or "main")
  *   <mod-name>/
  *     mod.json
@@ -27,10 +27,15 @@
 
 import { readFile, writeFile, mkdir, readdir, cp, access, rm } from 'node:fs/promises';
 import { join, basename } from 'node:path';
-import { homedir } from 'node:os';
+import { getRuntimeHome } from '../core/paths.js';
 
-const MODS_DIR = join(homedir(), '.tako', 'mods');
-const ACTIVE_FILE = join(MODS_DIR, 'active');
+function modsDir(): string {
+  return join(getRuntimeHome(), 'mods');
+}
+
+function activeFile(): string {
+  return join(modsDir(), 'active');
+}
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -74,14 +79,15 @@ export interface ModInfo {
 export class ModManager {
   /** List all installed mods. */
   async list(): Promise<ModInfo[]> {
-    await mkdir(MODS_DIR, { recursive: true });
+    const root = modsDir();
+    await mkdir(root, { recursive: true });
     const active = await this.getActive();
-    const entries = await readdir(MODS_DIR, { withFileTypes: true });
+    const entries = await readdir(root, { withFileTypes: true });
     const mods: ModInfo[] = [];
 
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const modPath = join(MODS_DIR, entry.name);
+      const modPath = join(root, entry.name);
       const manifest = await this.readManifest(modPath);
       if (!manifest) continue;
 
@@ -100,7 +106,7 @@ export class ModManager {
   /** Get the currently active mod name. "main" = default (no mod). */
   async getActive(): Promise<string> {
     try {
-      const content = await readFile(ACTIVE_FILE, 'utf-8');
+      const content = await readFile(activeFile(), 'utf-8');
       return content.trim() || 'main';
     } catch {
       return 'main';
@@ -109,17 +115,18 @@ export class ModManager {
 
   /** Switch to a mod (or "main" to deactivate mods). */
   async use(name: string): Promise<{ success: boolean; message: string }> {
-    await mkdir(MODS_DIR, { recursive: true });
+    const root = modsDir();
+    await mkdir(root, { recursive: true });
 
     if (name === 'main') {
-      await writeFile(ACTIVE_FILE, 'main');
+      await writeFile(activeFile(), 'main');
       return {
         success: true,
         message: 'Switched to main workspace. Restart Tako to apply.',
       };
     }
 
-    const modPath = join(MODS_DIR, name);
+    const modPath = join(root, name);
     const manifest = await this.readManifest(modPath);
     if (!manifest) {
       return { success: false, message: `Mod "${name}" not found. Run \`tako mod list\` to see installed mods.` };
@@ -134,7 +141,7 @@ export class ModManager {
       await mkdir(modWorkspace, { recursive: true });
     }
 
-    await writeFile(ACTIVE_FILE, name);
+    await writeFile(activeFile(), name);
     return {
       success: true,
       message: [
@@ -157,7 +164,7 @@ export class ModManager {
       return { success: false, message: `No valid mod.json found at ${sourcePath}` };
     }
 
-    const destPath = join(MODS_DIR, manifest.name);
+    const destPath = join(modsDir(), manifest.name);
     await mkdir(destPath, { recursive: true });
 
     // Copy mod contents
@@ -178,7 +185,7 @@ export class ModManager {
   /** Install a mod from a git repo URL. */
   async installFromGit(url: string): Promise<{ success: boolean; message: string }> {
     const { execSync } = await import('node:child_process');
-    const tmpDir = join(MODS_DIR, '.tmp-' + Date.now());
+    const tmpDir = join(modsDir(), '.tmp-' + Date.now());
 
     try {
       await mkdir(tmpDir, { recursive: true });
@@ -200,10 +207,10 @@ export class ModManager {
 
     const active = await this.getActive();
     if (active === name) {
-      await writeFile(ACTIVE_FILE, 'main');
+      await writeFile(activeFile(), 'main');
     }
 
-    const modPath = join(MODS_DIR, name);
+    const modPath = join(modsDir(), name);
     try {
       await rm(modPath, { recursive: true, force: true });
       return { success: true, message: `Mod "${name}" removed.${active === name ? ' Switched back to main.' : ''}` };
@@ -214,7 +221,7 @@ export class ModManager {
 
   /** Create a new mod from the current workspace (export). */
   async create(name: string, description: string, author?: string): Promise<{ success: boolean; message: string }> {
-    const modPath = join(MODS_DIR, name);
+    const modPath = join(modsDir(), name);
     await mkdir(join(modPath, 'workspace'), { recursive: true });
     await mkdir(join(modPath, 'skills'), { recursive: true });
 
@@ -249,21 +256,21 @@ export class ModManager {
   async getActiveWorkspace(): Promise<string | null> {
     const active = await this.getActive();
     if (active === 'main') return null;
-    return join(MODS_DIR, active, 'workspace');
+    return join(modsDir(), active, 'workspace');
   }
 
   /** Get the active mod's config overrides. Returns null if on main. */
   async getActiveConfig(): Promise<ModConfig | null> {
     const active = await this.getActive();
     if (active === 'main') return null;
-    return this.readConfig(join(MODS_DIR, active));
+    return this.readConfig(join(modsDir(), active));
   }
 
   /** Get the active mod's skill directories. */
   async getActiveSkillDirs(): Promise<string[]> {
     const active = await this.getActive();
     if (active === 'main') return [];
-    const modPath = join(MODS_DIR, active);
+    const modPath = join(modsDir(), active);
     const config = await this.readConfig(modPath);
     const dirs = [join(modPath, 'skills')];
     if (config.skillDirs) {
@@ -295,5 +302,5 @@ export class ModManager {
 
 /** Get the mods directory path. */
 export function getModsDir(): string {
-  return MODS_DIR;
+  return modsDir();
 }

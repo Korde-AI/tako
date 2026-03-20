@@ -64,6 +64,8 @@
     "@anthropic-ai/sdk": "^0.30.0",
     "@clack/prompts": "^1.1.0",
     "@mariozechner/pi-coding-agent": "^0.56.1",
+    "acpx": "^0.1.16",
+    "agent-browser": "^0.19.0",
     "discord.js": "^14.25.1",
     "grammy": "^1.41.1",
     "ink": "^6.8.0",
@@ -73,6 +75,7 @@
     "ink-text-input": "^6.0.0",
     "open": "^11.0.0",
     "openai": "^4.70.0",
+    "pdfjs-dist": "^5.5.207",
     "react": "^19.2.4",
     "ws": "^8.18.0"
   },
@@ -99,6 +102,6 @@
     "@types/react": "^19.2.14",
     "@types/ws": "^8.5.0",
     "tsx": "^4.21.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.9.3"
   }
 }

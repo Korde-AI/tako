@@ -44,6 +44,10 @@ export class ProjectBindingRegistry {
       this.key(a).localeCompare(this.key(b)));
   }
 
+  listActive(): ProjectBinding[] {
+    return this.list().filter((binding) => (binding.status ?? 'active') === 'active');
+  }
+
   async bind(input: {
     projectId: string;
     platform: 'discord' | 'telegram' | 'cli';
@@ -60,6 +64,7 @@ export class ProjectBindingRegistry {
       threadId: input.threadId,
       agentId: input.agentId,
       createdAt: new Date().toISOString(),
+      status: 'active',
     };
     this.bindings.set(this.key(binding), binding);
     await this.save();
@@ -72,7 +77,7 @@ export class ProjectBindingRegistry {
     threadId?: string;
     agentId?: string;
   }): ProjectBinding | null {
-    const matches = this.list().filter((binding) => {
+    const matches = this.listActive().filter((binding) => {
       if (binding.platform !== input.platform) return false;
       if (binding.channelTarget !== input.channelTarget) return false;
       if (binding.threadId && binding.threadId !== input.threadId) return false;
@@ -90,6 +95,38 @@ export class ProjectBindingRegistry {
 
     matches.sort((a, b) => score(b) - score(a));
     return matches[0];
+  }
+
+  async deactivateMatching(input: {
+    platform: string;
+    channelTarget?: string;
+    threadId?: string;
+    projectId?: string;
+    agentId?: string;
+    reason: string;
+  }): Promise<ProjectBinding[]> {
+    await this.ensureLoaded();
+    const changed: ProjectBinding[] = [];
+    for (const [key, binding] of this.bindings.entries()) {
+      if (binding.platform !== input.platform) continue;
+      if (input.projectId && binding.projectId !== input.projectId) continue;
+      if (input.channelTarget && binding.channelTarget !== input.channelTarget) continue;
+      if (input.threadId && binding.threadId !== input.threadId) continue;
+      if (input.agentId && binding.agentId !== input.agentId) continue;
+      if ((binding.status ?? 'active') === 'inactive') continue;
+      const updated: ProjectBinding = {
+        ...binding,
+        status: 'inactive',
+        deactivatedAt: new Date().toISOString(),
+        deactivatedReason: input.reason,
+      };
+      this.bindings.set(key, updated);
+      changed.push(updated);
+    }
+    if (changed.length > 0) {
+      await this.save();
+    }
+    return changed;
   }
 
   private async ensureLoaded(): Promise<void> {

@@ -5,56 +5,55 @@
  *   tako acp list              List ACP sessions (active + persisted)
  *   tako acp kill <id>         Terminate a session
  *   tako acp logs <id>         Show session message log
+ *   tako acp exec <agent> <p>  One-shot ACP execution via acpx
+ *   tako acp send <agent> <p>  Persistent ACP session send via acpx
  */
 
 import { AcpSessionManager, type AcpSession } from '../tools/acp-sessions.js';
-import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-
-type CmdResult = { ok: boolean; code: number | null; stdout: string; stderr: string };
+import { AcpxRuntime } from '../acp/runtime.js';
+import { resolveAcpConfig, type AcpRuntimeConfig } from '../acp/config.js';
+import { resolveAcpxCommand, spawnAcpx, waitForExit } from '../acp/process.js';
 
 const ACP_AGENTS = new Set(['pi', 'claude', 'codex', 'opencode', 'gemini', 'kimi']);
 
-function detectAcpx(cwd: string): string {
-  const envCmd = process.env.ACPX_CMD;
-  if (envCmd && envCmd.trim().length > 0) return envCmd;
-
-  const local = join(cwd, 'extensions', 'acpx', 'node_modules', '.bin', 'acpx');
-  if (existsSync(local)) return local;
-
-  return 'acpx';
-}
-
-function run(cmd: string, argv: string[], cwd: string, timeoutMs = 120000): Promise<CmdResult> {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-
-    child.stdout.on('data', (d) => { stdout += d.toString(); });
-    child.stderr.on('data', (d) => { stderr += d.toString(); });
-
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      resolve({ ok: false, code: null, stdout, stderr: `${stderr}\n[timeout after ${timeoutMs}ms]` });
-    }, timeoutMs);
-
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ ok: code === 0, code, stdout, stderr });
-    });
-
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      resolve({ ok: false, code: null, stdout, stderr: `${stderr}\n${String(err)}` });
-    });
+/** Run a one-shot acpx command and collect output. */
+async function runAcpxCommand(
+  acpxCmd: string,
+  args: string[],
+  cwd: string,
+  timeoutMs = 120000,
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  const child = spawnAcpx({
+    command: acpxCmd,
+    args,
+    cwd,
+    stripProviderAuthEnvVars: true,
   });
+  child.stdin.end();
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (d) => { stdout += String(d); });
+  child.stderr.on('data', (d) => { stderr += String(d); });
+
+  const timer = setTimeout(() => {
+    try { child.kill('SIGKILL'); } catch { /* ignore */ }
+  }, timeoutMs);
+
+  const exit = await waitForExit(child);
+  clearTimeout(timer);
+
+  return {
+    ok: exit.error == null && (exit.code ?? 0) === 0,
+    stdout,
+    stderr,
+  };
 }
 
 export async function runAcp(args: string[]): Promise<void> {
   const sub = args[0] ?? 'list';
   const cwd = process.cwd();
+  const acpxCmd = resolveAcpxCommand(cwd);
 
   switch (sub) {
     case 'list':
@@ -64,12 +63,12 @@ export async function runAcp(args: string[]): Promise<void> {
         console.log('No ACP sessions found.');
         return;
       }
-      console.log('ID        Status     Backend  Label');
-      console.log('─'.repeat(60));
+      console.log('ID        Status     Agent    Label');
+      console.log('\u2500'.repeat(60));
       for (const s of sessions) {
         const elapsed = Math.round((Date.now() - s.startedAt) / 1000);
         console.log(
-          `${s.id.padEnd(10)} ${s.status.padEnd(10)} ${s.backend.padEnd(8)} ${s.label ?? '(none)'} (${elapsed}s ago)`,
+          `${s.id.padEnd(10)} ${s.status.padEnd(10)} ${(s.agent ?? 'unknown').padEnd(8)} ${s.label ?? '(none)'} (${elapsed}s ago)`,
         );
       }
       break;
@@ -81,7 +80,6 @@ export async function runAcp(args: string[]): Promise<void> {
         console.error('Usage: tako acp kill <session-id>');
         process.exit(1);
       }
-      // Can only kill live sessions — need a running manager
       console.log(`To kill a live session, use the acp_session_kill tool from within Tako.`);
       console.log(`For stale entries, they will be cleaned up on next Tako restart.`);
       break;
@@ -100,7 +98,7 @@ export async function runAcp(args: string[]): Promise<void> {
         process.exit(1);
       }
       console.log(`Session: ${session.id} [${session.status}]`);
-      console.log(`Backend: ${session.backend}`);
+      console.log(`Agent: ${session.agent ?? 'unknown'}`);
       console.log(`Started: ${new Date(session.startedAt).toISOString()}`);
       console.log(`Label: ${session.label ?? '(none)'}`);
       console.log('');
@@ -124,13 +122,34 @@ export async function runAcp(args: string[]): Promise<void> {
         process.exit(1);
       }
 
-      const acpx = detectAcpx(cwd);
-      const res = await run(acpx, [agent, 'exec', prompt], cwd, 180000);
-      if (!res.ok) {
-        console.error(res.stderr || res.stdout || 'acp exec failed');
+      // One-shot via acpx runtime
+      const config = resolveAcpConfig({ defaultAgent: agent }, cwd);
+      const runtime = new AcpxRuntime(config);
+      await runtime.probeAvailability();
+
+      if (!runtime.isHealthy()) {
+        console.error('acpx is not available. Install it with: npm install -g acpx@0.1.16');
         process.exit(1);
       }
-      console.log((res.stdout || '').trim());
+
+      const sessionName = `tako-exec-${Date.now()}`;
+      const handle = await runtime.ensureSession({
+        sessionKey: sessionName,
+        agent,
+        cwd,
+        mode: 'oneshot',
+      });
+
+      for await (const event of runtime.runTurn({ handle, text: prompt })) {
+        if (event.type === 'text_delta') {
+          process.stdout.write(event.text);
+        } else if (event.type === 'error') {
+          console.error(`\n[error: ${event.message}]`);
+        }
+      }
+      console.log('');
+
+      await runtime.close({ handle, reason: 'exec-complete' }).catch(() => {});
       break;
     }
 
@@ -146,15 +165,31 @@ export async function runAcp(args: string[]): Promise<void> {
         process.exit(1);
       }
 
-      const acpx = detectAcpx(cwd);
-      const sessionName = `tako-${agent}-${Buffer.from(cwd).toString('base64url').slice(0, 10)}`;
-      await run(acpx, [agent, 'sessions', 'new', '--name', sessionName], cwd, 60000);
-      const res = await run(acpx, [agent, '-s', sessionName, prompt], cwd, 240000);
-      if (!res.ok) {
-        console.error(res.stderr || res.stdout || 'acp send failed');
+      const config = resolveAcpConfig({ defaultAgent: agent }, cwd);
+      const runtime = new AcpxRuntime(config);
+      await runtime.probeAvailability();
+
+      if (!runtime.isHealthy()) {
+        console.error('acpx is not available. Install it with: npm install -g acpx@0.1.16');
         process.exit(1);
       }
-      console.log((res.stdout || '').trim());
+
+      const sessionName = `tako-${agent}-${Buffer.from(cwd).toString('base64url').slice(0, 10)}`;
+      const handle = await runtime.ensureSession({
+        sessionKey: sessionName,
+        agent,
+        cwd,
+        mode: 'persistent',
+      });
+
+      for await (const event of runtime.runTurn({ handle, text: prompt })) {
+        if (event.type === 'text_delta') {
+          process.stdout.write(event.text);
+        } else if (event.type === 'error') {
+          console.error(`\n[error: ${event.message}]`);
+        }
+      }
+      console.log('');
       break;
     }
 

@@ -74,6 +74,20 @@ export class MessageQueue {
       this.queues.set(sessionId, queue);
     }
 
+    const last = queue[queue.length - 1];
+    const isDuplicate = !!last
+      && (
+        (message.messageId && last.messageId === message.messageId)
+        || (
+          last.authorId === message.authorId
+          && last.content === message.content
+          && Math.abs(last.timestamp - message.timestamp) < 5_000
+        )
+      );
+    if (isDuplicate) {
+      return true;
+    }
+
     queue.push(message);
 
     // Enforce cap

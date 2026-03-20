@@ -7,9 +7,11 @@
 
 import { appendFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { getRuntimePaths } from '../core/paths.js';
 
-const LOG_DIR = join(homedir(), '.tako', 'logs');
+function getLogRoot(): string {
+  return getRuntimePaths().logsDir;
+}
 
 /** Format a Date as YYYY-MM-DD. */
 function dateStamp(d: Date = new Date()): string {
@@ -18,14 +20,14 @@ function dateStamp(d: Date = new Date()): string {
 
 /** Get the log file path for a given date. */
 function logPath(date?: Date): string {
-  return join(LOG_DIR, `tako-${dateStamp(date)}.log`);
+  return join(getLogRoot(), `tako-${dateStamp(date)}.log`);
 }
 
 let dirReady = false;
 
 async function ensureDir(): Promise<void> {
   if (dirReady) return;
-  await mkdir(LOG_DIR, { recursive: true });
+  await mkdir(getLogRoot(), { recursive: true });
   dirReady = true;
 }
 
@@ -72,7 +74,7 @@ export function installFileLogger(): void {
 
 /** Return the absolute directory where logs are stored. */
 export function getLogDir(): string {
-  return LOG_DIR;
+  return getLogRoot();
 }
 
 /** Return the log file path for a specific date. */

@@ -36,7 +36,7 @@ describe('AcpSessionManager', () => {
       backend: 'claude',
       defaultTimeout: 60,
     });
-    const { session } = manager.getStatus('nonexistent');
+    const { session } = await manager.getStatus('nonexistent');
     assert.equal(session, null);
   });
 
