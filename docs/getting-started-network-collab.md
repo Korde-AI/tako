@@ -2,12 +2,16 @@
 
 Use this mode when each collaborator brings their own edge and a hub coordinates routes and relay.
 
+Development-first rule:
+- use `bun run src/index.ts ...` from the repo checkout
+- do not start with `tako start` for this workflow
+
 ## Single-server test layout
 
 ```bash
-tako hub start --home /srv/tako/hub --port 18790
-tako start --home /srv/tako/edge-alice --port 18801
-tako start --home /srv/tako/edge-bob --port 18802
+bun run src/index.ts hub start --home /tmp/tako-discord/hub --port 18790
+bun run src/index.ts start --home /tmp/tako-discord/edge-alice --port 18801
+bun run src/index.ts start --home /tmp/tako-discord/edge-bob --port 18802
 ```
 
 One server is enough for development if each instance has:
@@ -30,9 +34,9 @@ Set `network.hub` in each edge home:
 ## Verify control-plane sync
 
 ```bash
-tako network status --home /srv/tako/edge-alice
-tako hub status --home /srv/tako/hub
-tako hub nodes --home /srv/tako/hub
+bun run src/index.ts network status --home /tmp/tako-discord/edge-alice
+bun run src/index.ts hub status --home /tmp/tako-discord/hub
+bun run src/index.ts hub nodes --home /tmp/tako-discord/hub
 ```
 
 ## Pair and invite
@@ -40,26 +44,26 @@ tako hub nodes --home /srv/tako/hub
 On the hosting edge:
 
 ```bash
-tako network invite create alpha --issued-by <principalId> --target-node <remoteNodeId> --home /srv/tako/edge-alice
+bun run src/index.ts network invite create alpha --issued-by <principalId> --target-node <remoteNodeId> --home /tmp/tako-discord/edge-alice
 ```
 
 Move the invite JSON to the invited edge, then:
 
 ```bash
-tako network invite import ./invite.json --home /srv/tako/edge-bob
-tako network invite accept <inviteId> --home /srv/tako/edge-bob
+bun run src/index.ts network invite import ./invite.json --home /tmp/tako-discord/edge-bob
+bun run src/index.ts network invite accept <inviteId> --home /tmp/tako-discord/edge-bob
 ```
 
 ## Register a network session
 
 ```bash
-tako network sessions register alpha --nodes <bobNodeId> --home /srv/tako/edge-alice
+bun run src/index.ts network sessions register alpha --nodes <bobNodeId> --home /tmp/tako-discord/edge-alice
 ```
 
 ## Delegate bounded work
 
 ```bash
-tako network delegate alpha --to <bobNodeId> --capability summarize_workspace --home /srv/tako/edge-alice
+bun run src/index.ts network delegate alpha --to <bobNodeId> --capability summarize_workspace --home /tmp/tako-discord/edge-alice
 ```
 
 ## Current limits

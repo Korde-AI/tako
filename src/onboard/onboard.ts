@@ -502,9 +502,9 @@ export async function runOnboard(): Promise<void> {
   const channelOptions: { value: string; label: string; hint: string }[] = [
     { value: 'keep', label: `Keep current (${existingChannels.length > 0 ? existingChannels.join(' + ') : 'CLI only'})`, hint: 'no changes' },
     { value: 'cli', label: 'CLI only', hint: existingChannels.length > 0 ? 'removes existing channels' : 'start chatting right away' },
-    { value: 'discord', label: 'Discord bot', hint: hasExistingDiscord ? 'reconfigure' : 'requires bot token' },
+    { value: 'discord', label: 'Discord bot (Recommended)', hint: hasExistingDiscord ? 'reconfigure recommended default' : 'recommended default for collaborative edge setup' },
     { value: 'telegram', label: 'Telegram bot', hint: hasExistingTelegram ? 'reconfigure' : 'requires bot token from @BotFather' },
-    { value: 'both', label: 'Discord + Telegram', hint: 'set up both' },
+    { value: 'both', label: 'Discord + Telegram', hint: 'set up both; Discord is still the recommended primary surface' },
   ];
 
   // Remove 'keep' option if no existing config

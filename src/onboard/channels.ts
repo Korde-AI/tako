@@ -84,7 +84,7 @@ async function channelsAdd(channel?: string): Promise<void> {
     const choice = await p.select({
       message: 'Which channel would you like to add?',
       options: [
-        { value: 'discord', label: 'Discord', hint: 'requires bot token' },
+        { value: 'discord', label: 'Discord (Recommended)', hint: 'best default for collaborative edge setup' },
         { value: 'telegram', label: 'Telegram', hint: 'requires bot token from @BotFather' },
       ],
     });
@@ -105,7 +105,7 @@ async function channelsAdd(channel?: string): Promise<void> {
       if (p.isCancel(replace) || !replace) return;
     }
 
-    p.log.info('Discord Bot Setup');
+    p.log.info('Discord Bot Setup (Recommended)');
     p.log.message('Create a bot at https://discord.com/developers/applications');
 
     const token = await p.password({

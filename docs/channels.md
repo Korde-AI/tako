@@ -2,6 +2,12 @@
 
 Tako connects to Discord and Telegram through bot tokens. This guide explains how to get those tokens. Once you have them, just run `tako onboard` and paste them in when prompted.
 
+For development from source, prefer:
+
+```bash
+bun run src/index.ts onboard --home /tmp/tako-discord/edge-yourname
+```
+
 ---
 
 ## Discord
@@ -40,7 +46,7 @@ Still on the **Bot** tab, scroll down to **Privileged Gateway Intents** and enab
 ### Step 4 — Run onboarding
 
 ```bash
-tako onboard
+bun run src/index.ts onboard --home /tmp/tako-discord/edge-yourname
 ```
 
 When prompted for a Discord bot token, paste the token you copied in Step 1.
@@ -63,7 +69,7 @@ Message **[@userinfobot](https://t.me/userinfobot)** on Telegram. It will reply 
 ### Step 3 — Run onboarding
 
 ```bash
-tako onboard
+bun run src/index.ts onboard --home /tmp/tako-discord/edge-yourname
 ```
 
 When prompted for a Telegram bot token, paste the token from Step 1.
