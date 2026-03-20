@@ -103,6 +103,19 @@ function isTextFile(filename?: string, mimeType?: string): boolean {
   return false;
 }
 
+function isOfficeFile(filename?: string, mimeType?: string): boolean {
+  const name = filename?.toLowerCase() ?? '';
+  const mime = mimeType?.toLowerCase() ?? '';
+  return (
+    name.endsWith('.pptx')
+    || name.endsWith('.docx')
+    || name.endsWith('.xlsx')
+    || mime === 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    || mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    || mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  );
+}
+
 function isPdf(mimeType?: string, filename?: string): boolean {
   if (mimeType === 'application/pdf') return true;
   if (filename?.toLowerCase().endsWith('.pdf')) return true;
@@ -600,6 +613,10 @@ export class AgentLoop {
       a.url && a.type !== 'image' && !a.mimeType?.startsWith('image/')
       && (a.type === 'file' || isPdf(a.mimeType, a.filename) || isTextFile(a.filename, a.mimeType))
     ) ?? [];
+    const opaqueFileAttachments = attachments?.filter((a) =>
+      a.url && a.type !== 'image' && !a.mimeType?.startsWith('image/')
+      && !isPdf(a.mimeType, a.filename) && !isTextFile(a.filename, a.mimeType)
+    ) ?? [];
 
     const extraParts: import('../providers/provider.js').ContentPart[] = [];
     let textPrefix = '';
@@ -637,6 +654,20 @@ export class AgentLoop {
         const text = dl.buffer.toString('utf-8');
         textPrefix += `[Attached file: ${a.filename ?? 'file'}]\n${text}\n\n`;
       }
+    }
+
+    // Surface opaque attachments like .pptx/.docx/.xlsx as local artifacts the model can inspect with tools.
+    for (const a of opaqueFileAttachments) {
+      const filePath = a.url ?? '';
+      const descriptor = [
+        `Attached file available locally: ${a.filename ?? 'file'}`,
+        a.mimeType ? `type=${a.mimeType}` : null,
+        filePath ? `path=${filePath}` : null,
+      ].filter(Boolean).join(', ');
+      const hint = isOfficeFile(a.filename, a.mimeType)
+        ? 'This is an Office document. Use the extract_office_text tool on the local path to read its contents.'
+        : 'Use file or exec tools if you need to inspect this attachment.';
+      textPrefix += `[${descriptor}]\n${hint}\n\n`;
     }
 
     // Build the user message

@@ -15,6 +15,8 @@ import { contentSearchTool } from '../src/tools/search.js';
 import type { ToolContext } from '../src/tools/tool.js';
 import { createMemoryTools } from '../src/tools/memory.js';
 import { createProjectTools } from '../src/tools/projects.js';
+import { createMessageTools } from '../src/tools/message.js';
+import { extractPptxSlideTextFromXml, officeTools } from '../src/tools/office.js';
 import { setRuntimePaths } from '../src/core/paths.js';
 import { bootstrapProjectHome } from '../src/projects/bootstrap.js';
 
@@ -87,6 +89,11 @@ describe('ToolRegistry', () => {
     });
     const names = tools.map((tool) => tool.name).sort();
     assert.deepEqual(names, ['project_bootstrap', 'project_member_manage']);
+  });
+
+  it('registers office extraction tool', () => {
+    const names = officeTools.map((tool) => tool.name);
+    assert.ok(names.includes('extract_office_text'));
   });
 });
 
@@ -304,5 +311,62 @@ describe('memory tools', () => {
     assert.ok(!otherSearch.output.includes('project-private:MEMORY.md'));
 
     await rm(home, { recursive: true, force: true });
+  });
+});
+
+describe('message tools', () => {
+  it('infers Discord guild and parent channel from execution context for channel creation', async () => {
+    let seen: { guildId: string; name: string; topic?: string; parentId?: string } | null = null;
+    const tools = createMessageTools({
+      resolveDiscord: () => ({
+        createChannel: async (guildId: string, name: string, opts?: { topic?: string; parentId?: string }) => {
+          seen = { guildId, name, topic: opts?.topic, parentId: opts?.parentId };
+          return { id: '123', name };
+        },
+      } as any),
+    });
+    const messageTool = tools.find((tool) => tool.name === 'message');
+    assert.ok(messageTool);
+
+    const result = await messageTool!.execute(
+      { action: 'channel-create', platform: 'discord', name: 'callgo', topic: 'project room' },
+      {
+        sessionId: 'session-1',
+        workDir: '/tmp',
+        workspaceRoot: '/tmp',
+        channelTarget: 'parent-chan-1',
+        executionContext: {
+          mode: 'edge',
+          home: '/tmp',
+          nodeId: 'node-1',
+          nodeName: 'edge-a',
+          agentId: 'main',
+          metadata: {
+            guildId: 'guild-1',
+            parentChannelId: 'parent-chan-1',
+          },
+        },
+      },
+    );
+
+    assert.equal(result.success, true);
+    assert.deepEqual(seen, {
+      guildId: 'guild-1',
+      name: 'callgo',
+      topic: 'project room',
+      parentId: 'parent-chan-1',
+    });
+  });
+});
+
+describe('office tools', () => {
+  it('extracts slide text from pptx slide XML', () => {
+    const xml = `
+      <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+        <a:t>Hello</a:t>
+        <a:t>World &amp; Beyond</a:t>
+      </p:sld>
+    `;
+    assert.deepEqual(extractPptxSlideTextFromXml(xml), ['Hello', 'World & Beyond']);
   });
 });

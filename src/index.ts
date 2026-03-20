@@ -55,6 +55,7 @@ import { createGitHubTools } from './tools/github.js';
 import { createModelTool } from './tools/model.js';
 import { imageTools } from './tools/image.js';
 import { gitTools } from './tools/git.js';
+import { officeTools } from './tools/office.js';
 import { AgentLoop } from './core/agent-loop.js';
 import { PromptBuilder } from './core/prompt.js';
 import { ContextManager } from './core/context.js';
@@ -1185,12 +1186,55 @@ async function runStart(): Promise<void> {
 
     const worktreeRegistry = new ProjectWorktreeRegistry(join(getRuntimePaths().projectsDir, project.projectId, 'worktrees'), project.projectId);
     await worktreeRegistry.load();
+    const projectRoot = resolveProjectRoot(runtimePaths, project);
     await worktreeRegistry.register({
       nodeId: getNodeIdentity().nodeId,
-      root: resolveProjectRoot(runtimePaths, project),
+      root: projectRoot,
       label: 'owner-default',
       ownerPrincipalId: executionContext.principalId,
     });
+
+    const statusPath = join(projectRoot, 'STATUS.md');
+    const projectDocPath = join(projectRoot, 'PROJECT.md');
+    const modeLabel = project.collaboration?.mode ?? 'single-user';
+    if (!existsSync(projectDocPath)) {
+      const projectDoc = [
+        `# ${project.displayName}`,
+        '',
+        `- Slug: \`${project.slug}\``,
+        `- Owner principal: \`${project.ownerPrincipalId}\``,
+        `- Mode: \`${modeLabel}\``,
+        project.description ? '' : null,
+        project.description ? '## Description' : null,
+        project.description ?? null,
+      ].filter(Boolean).join('\n');
+      await writeFile(projectDocPath, `${projectDoc}\n`, 'utf-8');
+    }
+    if (!existsSync(statusPath)) {
+      const statusDoc = [
+        `# STATUS`,
+        '',
+        `Project: ${project.displayName} (\`${project.slug}\`)`,
+        `Mode: ${modeLabel}`,
+        '',
+        '## Current Goal',
+        '- Define the immediate next milestone.',
+        '',
+        '## In Progress',
+        '- Project room initialized.',
+        '',
+        '## Done',
+        `- Project created by ${executionContext.principalName ?? executionContext.principalId}.`,
+        '',
+        '## Blockers',
+        '- None recorded yet.',
+        '',
+        '## Next Actions',
+        '- Add collaborators if needed.',
+        '- Update this file as work progresses.',
+      ].join('\n');
+      await writeFile(statusPath, `${statusDoc}\n`, 'utf-8');
+    }
 
     const background = await buildProjectBackground(project.projectId, existing ? 'discord_tool_rebind' : 'discord_tool_bootstrap');
     if (hubClient && nodeIdentity) {
@@ -1536,6 +1580,7 @@ async function runStart(): Promise<void> {
   }));
   toolRegistry.registerAll(imageTools);
   toolRegistry.registerAll(gitTools);
+  toolRegistry.registerAll(officeTools);
   toolRegistry.registerAll(createMemoryTools({
     workspaceRoot: config.memory.workspace,
     embeddingProvider: embeddingProvider ?? undefined,

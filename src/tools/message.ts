@@ -129,6 +129,17 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
         if (!t || t === 'current') return ctx.channelTarget as string | undefined;
         return t;
       };
+      const executionMeta = ctx.executionContext?.metadata ?? {};
+      const inferDiscordGuildId = (): string | undefined => {
+        const fromExecution = typeof executionMeta['guildId'] === 'string' ? executionMeta['guildId'] : undefined;
+        const fromMeta = typeof ctx.meta?.['guildId'] === 'string' ? String(ctx.meta['guildId']) : undefined;
+        return p.guildId ?? fromExecution ?? fromMeta;
+      };
+      const inferDiscordParentId = (): string | undefined => {
+        const fromExecution = typeof executionMeta['parentChannelId'] === 'string' ? executionMeta['parentChannelId'] : undefined;
+        const fromTarget = ctx.channelTarget;
+        return p.parentId ?? fromExecution ?? (typeof fromTarget === 'string' ? fromTarget : undefined);
+      };
 
       // Resolve per-agent channels at call time using ctx.agentId
       const discord = getDiscord(ctx.agentId);
@@ -194,16 +205,29 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
             if (p.platform !== 'discord') {
               return { output: '', success: false, error: 'channel-create is only supported on Discord' };
             }
-            if (!p.guildId) return { output: '', success: false, error: 'guildId is required for channel-create' };
+            const guildId = inferDiscordGuildId();
+            if (!guildId) {
+              return {
+                output: '',
+                success: false,
+                error: 'guildId is required for channel-create unless the current Discord guild context is available',
+              };
+            }
             if (!p.name) return { output: '', success: false, error: 'name is required for channel-create' };
 
-            const channel = await discord!.createChannel(p.guildId, p.name, {
+            const channel = await discord!.createChannel(guildId, p.name, {
               topic: p.topic,
-              parentId: p.parentId,
+              parentId: inferDiscordParentId(),
             });
 
             return {
-              output: JSON.stringify({ created: true, platform: 'discord', channelId: channel.id, channelName: channel.name }),
+              output: JSON.stringify({
+                created: true,
+                platform: 'discord',
+                guildId,
+                channelId: channel.id,
+                channelName: channel.name,
+              }),
               success: true,
             };
           }
