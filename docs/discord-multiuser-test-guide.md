@@ -4,7 +4,8 @@ Use this guide when you want to test Tako primarily from the Discord side instea
 
 This is the correct split:
 - Discord is the human collaboration surface
-- Tako edge and hub are still the control plane underneath
+- one or more edges hold the real local project/workspace state
+- a hub is optional later; it is not required for normal Discord-first collaboration
 - a few bootstrap/admin actions still require CLI today
 
 ## What This Guide Covers
@@ -24,19 +25,18 @@ You can test collaboration from Discord.
 You cannot yet do every setup step from Discord alone.
 
 Today, these still require CLI or operator setup:
-- hub startup
 - edge startup
 - Discord bot token/config wiring
 - initial project creation
 - project-channel binding
-- invite import/accept between homes when testing multiple user-owned edges
+- some invite/bootstrap steps between homes when testing multiple user-owned edges
 
 After bootstrap, the collaboration flow can be tested from Discord much more directly.
 
 ## Topology
 
 Recommended single-server test topology:
-- `1 hub`
+- `0 or 1 hub`
 - `2 edges`
 - `2 Discord bot identities` if you want true separate bot actors
 - or `1 bot + networked edges` if you only need one visible bot surface first
@@ -60,14 +60,16 @@ This validates:
 
 ### Mode B: Full invited-agent validation
 Use:
-- hub
 - edge A
 - edge B
 - trust/invite flow between edges
 - one bound Discord project channel/thread
 - remote network session and delegated work
 
-This validates the full target model more closely.
+This validates the Discord-first personal-agent model more closely.
+
+Optional:
+- add a hub later if you specifically want extra control-plane visibility
 
 ## Preconditions
 
@@ -90,21 +92,14 @@ npm test
 
 These are the parts that still happen outside Discord.
 
-### 1.1 Start the hub
+### 1.1 Start edge A
 
-```bash
-bun run src/index.ts hub start --home /tmp/tako-discord/hub --port 18790
-```
-
-### 1.2 Start edge A
-
-Configure edge A with your Discord token and hub URL, then start it.
+Configure edge A with your Discord token, then start it.
 
 Example shape in its config:
 - Discord enabled
 - bot token present
 - gateway bind/port set
-- `network.hub` pointing to the hub
 
 Then run:
 
@@ -112,10 +107,18 @@ Then run:
 bun run src/index.ts start --home /tmp/tako-discord/edge-a --port 18801
 ```
 
-### 1.3 Optional: start edge B for invited-agent testing
+### 1.2 Optional: start edge B for invited-agent testing
 
 ```bash
 bun run src/index.ts start --home /tmp/tako-discord/edge-b --port 18802
+```
+
+### 1.3 Optional: start the hub later
+
+Only do this if you explicitly want extra control-plane visibility or later network routing beyond Discord-first collaboration.
+
+```bash
+bun run src/index.ts hub start --home /tmp/tako-discord/hub --port 18790
 ```
 
 ### 1.4 Create principals and project

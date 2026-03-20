@@ -1,12 +1,13 @@
 # Tako
 
-Tako is a multi-user collaboration runtime built around personal `edge` agents and an optional coordination `hub`.
+Tako is a multi-user collaboration runtime built around personal `edge` agents. Discord-first collaboration works without a hub. The `hub` is an optional later control-plane layer for dashboard-style visibility, routing, and coordination.
 
 The current model is:
 - each user can run their own edge
 - each edge keeps its own provider credentials, private memory, tools, files, and local execution policy
+- Discord can already act as the main collaboration surface between personal agents
 - projects, sessions, trust, routing, and relay can be coordinated across edges
-- the hub is control plane only; it does not run the LLM or own private edge state
+- the hub is optional control plane only; it does not run the LLM or own private edge state
 
 ## Runtime modes
 
@@ -16,7 +17,8 @@ Use an edge when you want a real agent runtime.
 An edge can run:
 - solo
 - as one shared local collaboration bot on Discord or Telegram
-- as part of a networked multi-edge collaboration setup through a hub
+- as part of a Discord-first personal-agent collaboration setup without a hub
+- as part of a networked multi-edge collaboration setup with an optional hub later
 
 Examples:
 
@@ -26,7 +28,7 @@ tako start --home ~/.tako-edge-alice --hub http://127.0.0.1:18790
 ```
 
 ### Hub
-Use a hub when you want node registration, project routing, relay, and audit aggregation.
+Use a hub when you want later-stage control-plane support such as node registration, project routing, relay inspection, audit aggregation, or a future dashboard.
 
 The hub does:
 - node registry
@@ -60,6 +62,14 @@ tako hub start --home ~/.tako-hub --port 18790
 - shared local sessions
 - shared and private project memory scopes
 - project-scoped tool roots
+
+### Discord-first personal-agent collaboration without a hub
+- one personal edge per person
+- one Discord bot per person
+- shared project rooms in Discord
+- project invites and acceptance through Discord
+- local project mirrors and worktrees on each participant edge
+- approval-gated cross-agent privileged actions
 
 ### Network collaboration across multiple edges
 - hub registration and heartbeat
@@ -101,11 +111,18 @@ npm run build
 ### Start a solo edge
 
 ```bash
-tako onboard --home ~/.tako-edge-main
-tako start --home ~/.tako-edge-main
+bun run src/index.ts onboard --home /tmp/tako-discord/edge-main
+bun run src/index.ts start --home /tmp/tako-discord/edge-main --port 18801
 ```
 
-### Start a hub and two edges on one server
+### Start two Discord-first personal edges with no hub
+
+```bash
+bun run src/index.ts start --home /tmp/tako-discord/edge-shu --port 18801
+bun run src/index.ts start --home /tmp/tako-discord/edge-jiaxin --port 18802
+```
+
+### Start a hub and two edges on one server later
 
 ```bash
 tako hub start --home /srv/tako/hub --port 18790
@@ -154,6 +171,7 @@ Typical collaboration flow:
 Use these entry points instead of relying on older docs that still describe the pre-edge/pre-hub layout:
 
 - [Solo edge guide](docs/getting-started-solo.md)
+- [Discord personal agent + collaboration guide](docs/discord-personal-agent-collaboration-guide.md)
 - [Local collaboration guide](docs/getting-started-local-collab.md)
 - [Network collaboration guide](docs/getting-started-network-collab.md)
 - [Troubleshooting](docs/troubleshooting.md)
