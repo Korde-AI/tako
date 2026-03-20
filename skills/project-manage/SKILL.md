@@ -13,6 +13,7 @@ Use this when the project already exists and the task is administrative.
 2. For member changes, decide whether `project_member_manage` is needed and use it only for actual project membership changes.
 3. For status updates, update `STATUS.md` first.
 4. When clarifying confusion, answer with the current project mode, members, and the next concrete action.
+5. For basic project explanations, intros, and current-state questions, stay on the read path. Answer from shared project context, room state, `PROJECT.md`, and `STATUS.md` when available. Do not use sync or mutation tools unless the user explicitly asks for synchronization or a state change.
 
 ## Membership
 

@@ -1382,13 +1382,15 @@ async function runStart(): Promise<void> {
 
     const acl = await loadAllowFrom(input.platform, input.agentId);
     const isBotOrigin = input.metadata?.['isBot'] === true;
-    const ownerPrincipalIds = acl.allowedPrincipalIds ?? [];
-    const ownerUserIds = acl.allowedUserIds ?? [];
+    const allowedPrincipalIds = acl.allowedPrincipalIds ?? [];
+    const allowedUserIds = acl.allowedUserIds ?? [];
+    const ownerPrincipalIds = allowedPrincipalIds.length > 0 ? [allowedPrincipalIds[0]] : [];
+    const ownerUserIds = allowedUserIds.length > 0 ? [allowedUserIds[0]] : [];
     const isOwner = acl.mode === 'open' && acl.claimed !== true
       ? true
       : Boolean(
-          (input.principalId && ownerPrincipalIds.includes(input.principalId))
-          || ownerUserIds.includes(input.authorId),
+          (input.principalId && allowedPrincipalIds.includes(input.principalId))
+          || allowedUserIds.includes(input.authorId),
         );
 
     if (isOwner) {
@@ -1409,6 +1411,22 @@ async function runStart(): Promise<void> {
       ownerPrincipalIds,
       isBotOrigin,
     };
+  };
+
+  const isSharedReadonlySafeToolCall = (
+    toolCall: import('./providers/provider.js').ToolCall,
+  ): boolean => {
+    if (toolCall.name === 'discord_room_inspect') return true;
+    if (toolCall.name === 'project_sync') {
+      const input = toolCall.input as Record<string, unknown> | undefined;
+      const update = typeof input?.['update'] === 'string' ? input['update'].trim() : '';
+      return update.length === 0;
+    }
+    if (toolCall.name === 'project_member_manage') {
+      const input = toolCall.input as Record<string, unknown> | undefined;
+      return input?.['action'] === 'list';
+    }
+    return false;
   };
 
   const isDiscordInvocationAllowed = async (input: {
@@ -3086,6 +3104,10 @@ async function runStart(): Promise<void> {
     const accessMode = String(input.executionContext?.metadata?.['agentAccessMode'] ?? '');
     if (accessMode !== 'shared_readonly' && accessMode !== 'peer_agent_readonly') {
       return null;
+    }
+
+    if (isSharedReadonlySafeToolCall(input.toolCall)) {
+      return { allow: true };
     }
 
     const ownerUserIds = Array.isArray(input.executionContext?.metadata?.['ownerUserIds'])

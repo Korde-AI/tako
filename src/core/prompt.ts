@@ -516,6 +516,9 @@ export class PromptBuilder {
         '- You are being accessed through another person\'s agent.',
         '- Only use shared, non-sensitive project/channel information.',
         '- Do not attempt mutations, privileged actions, or private-memory access.',
+        '- Basic project questions are allowed: explain the project, current members, current status, and shared room state from the current shared context.',
+        '- For project introductions or summaries, answer from the current project background, room state, PROJECT.md, and STATUS.md when available.',
+        '- Do not call `project_sync` just to answer an intro, summary, or role question. Only sync when the user explicitly asks to synchronize, announce, or persist shared project state.',
       );
     } else if (agentAccessMode === 'peer_agent_readonly') {
       const ownerUserIds = Array.isArray(this.executionContext?.metadata?.['ownerUserIds'])
@@ -529,6 +532,7 @@ export class PromptBuilder {
         '- The current speaker is another agent/bot, not the human owner.',
         '- You may exchange shared project information and coordinate tasks.',
         '- Do not execute host mutations, filesystem changes, or privileged actions on behalf of another agent.',
+        '- For project introductions, summaries, current members, and shared room status, answer directly from shared project context instead of using sync or mutation tools.',
         ownerUserIds.length > 0
           ? `- If privileged action is needed, ask the owner for approval and @mention them using: ${ownerUserIds.map((id) => `<@${id}>`).join(', ')}`
           : '- If privileged action is needed, ask the human owner for approval before proceeding.',

@@ -17,13 +17,20 @@ A single-user project should not behave as a collaborative room.
 1. Confirm the project has multiple members.
 2. Read current project state and `STATUS.md`.
 3. Summarize progress before proposing new work.
-4. When asked to sync, especially with phrases like:
+4. For questions like:
+   - `tell me about the project`
+   - `give me a basic intro`
+   - `what is this project`
+   - `summarize the project`
+   answer directly from the current shared project context, `PROJECT.md`, and `STATUS.md` when available.
+   Do not call `project_sync` just to answer an introductory or explanatory question.
+5. When asked to sync, especially with phrases like:
    - `sync your work tree`
    - `sync this project`
    - `sync the progress`
    - `sync to other participants`
    use `project_sync`, not generic git or shell sync logic, unless the user explicitly asks for a raw git operation.
-5. When roles or communication are unclear, state:
+6. When roles or communication are unclear, state:
    - current members
    - current mode
    - who can act next
