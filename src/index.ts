@@ -684,6 +684,24 @@ async function runStart(): Promise<void> {
     if (input.executionContext?.projectId) {
       return projectRegistry.get(input.executionContext.projectId);
     }
+    if (input.executionContext?.platform && input.executionContext.channelTarget) {
+      const metadata = input.executionContext.metadata ?? {};
+      const channelTarget = typeof metadata['parentChannelId'] === 'string'
+        ? metadata['parentChannelId']
+        : input.executionContext.channelTarget;
+      const threadId = typeof metadata['threadId'] === 'string'
+        ? metadata['threadId']
+        : input.executionContext.threadId;
+      const resolved = resolveProject({
+        platform: input.executionContext.platform as 'discord' | 'telegram' | 'cli',
+        channelTarget,
+        threadId,
+        agentId: input.executionContext.agentId,
+      });
+      if (resolved?.project) {
+        return resolved.project;
+      }
+    }
     const session = input.sessionId ? sessions.get(input.sessionId) : undefined;
     const recentProjectId = typeof session?.metadata?.recentProjectId === 'string'
       ? session.metadata.recentProjectId
