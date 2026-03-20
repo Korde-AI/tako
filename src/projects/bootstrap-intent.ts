@@ -97,7 +97,7 @@ export function inferProjectBootstrapIntent(text: string): ProjectBootstrapInten
   const description = inferDescription(text, displayName);
 
   const bindHere = /\b(this channel|here|in this room|use this channel|bind here)\b/.test(normalized);
-  const wantsChannel = /\b(new channel|create a channel|open a channel)\b/.test(normalized);
+  const wantsChannel = /\b(channel)\b/.test(normalized) && !/\bthread\b/.test(normalized);
   const wantsThread = /\b(new thread|create a thread|open a thread)\b/.test(normalized);
   const destination: ProjectBootstrapIntent['destination'] = bindHere
     ? 'here'

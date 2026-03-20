@@ -88,7 +88,6 @@ import { createMessageTools } from './tools/message.js';
 import { ThreadBindingManager } from './core/thread-bindings.js';
 import type { Channel, InboundMessage } from './channels/channel.js';
 import { CommandRegistry } from './commands/registry.js';
-import { buildSkillCommands, type SkillCommandSpec } from './commands/skill-commands.js';
 import { showModelPicker } from './commands/model-picker.js';
 import { installFileLogger } from './utils/logger.js';
 import { createIntrospectTools } from './tools/introspect.js';
@@ -661,6 +660,33 @@ async function runStart(): Promise<void> {
     return { binding, project };
   };
 
+  const resolveProjectForToolContext = (input: {
+    explicitProjectSlug?: string;
+    executionContext?: ExecutionContext;
+    sessionId?: string;
+  }): Project | null => {
+    if (input.explicitProjectSlug) {
+      return projectRegistry.findBySlug(input.explicitProjectSlug) ?? null;
+    }
+    if (input.executionContext?.projectId) {
+      return projectRegistry.get(input.executionContext.projectId);
+    }
+    const session = input.sessionId ? sessions.get(input.sessionId) : undefined;
+    const recentProjectId = typeof session?.metadata?.recentProjectId === 'string'
+      ? session.metadata.recentProjectId
+      : undefined;
+    if (recentProjectId) {
+      return projectRegistry.get(recentProjectId);
+    }
+    const recentProjectSlug = typeof session?.metadata?.recentProjectSlug === 'string'
+      ? session.metadata.recentProjectSlug
+      : undefined;
+    if (recentProjectSlug) {
+      return projectRegistry.findBySlug(recentProjectSlug);
+    }
+    return null;
+  };
+
   const handleClosedProjectRoom = async (input: {
     platform: 'discord';
     channelId: string;
@@ -981,17 +1007,20 @@ async function runStart(): Promise<void> {
     ctx: import('./tools/tool.js').ToolContext,
   ): Promise<import('./tools/tool.js').ToolResult> => {
     const executionContext = ctx.executionContext;
-    if (!executionContext?.projectId) {
-      return { output: 'This action requires an active project room or explicit project slug.', success: false, error: 'missing_project_context' };
-    }
-    if (!executionContext.principalId || !executionContext.authorId || !executionContext.agentId) {
+    if (!executionContext || !executionContext.principalId || !executionContext.authorId || !executionContext.agentId) {
       return { output: '', success: false, error: 'Missing principal or channel execution context.' };
     }
-    const project = input.projectSlug
-      ? projectRegistry.findBySlug(input.projectSlug)
-      : projectRegistry.get(executionContext.projectId);
+    const project = resolveProjectForToolContext({
+      explicitProjectSlug: input.projectSlug,
+      executionContext,
+      sessionId: ctx.sessionId,
+    });
     if (!project) {
-      return { output: '', success: false, error: `Project not found${input.projectSlug ? `: ${input.projectSlug}` : ''}.` };
+      return {
+        output: 'There is no active or recently created project in this conversation yet. Move to the project room, or specify the project slug.',
+        success: false,
+        error: 'missing_project_context',
+      };
     }
 
     const actorRole = getProjectRole(projectMemberships, project.projectId, executionContext.principalId);
@@ -1071,17 +1100,20 @@ async function runStart(): Promise<void> {
     ctx: import('./tools/tool.js').ToolContext,
   ): Promise<import('./tools/tool.js').ToolResult> => {
     const executionContext = ctx.executionContext;
-    if (!executionContext?.projectId) {
-      return { output: 'This action requires an active project room or explicit project slug.', success: false, error: 'missing_project_context' };
-    }
-    if (!executionContext.principalId) {
+    if (!executionContext || !executionContext.principalId) {
       return { output: '', success: false, error: 'Missing principal execution context.' };
     }
-    const project = input.projectSlug
-      ? projectRegistry.findBySlug(input.projectSlug)
-      : projectRegistry.get(executionContext.projectId);
+    const project = resolveProjectForToolContext({
+      explicitProjectSlug: input.projectSlug,
+      executionContext,
+      sessionId: ctx.sessionId,
+    });
     if (!project) {
-      return { output: '', success: false, error: `Project not found${input.projectSlug ? `: ${input.projectSlug}` : ''}.` };
+      return {
+        output: 'There is no active or recently created project in this conversation yet. Move to the project room, or specify the project slug.',
+        success: false,
+        error: 'missing_project_context',
+      };
     }
     if (!isProjectMember(projectMemberships, project.projectId, executionContext.principalId)) {
       return { output: 'Only project members can sync project state.', success: false, error: 'project_membership_required' };
@@ -1125,17 +1157,20 @@ async function runStart(): Promise<void> {
     ctx: import('./tools/tool.js').ToolContext,
   ): Promise<import('./tools/tool.js').ToolResult> => {
     const executionContext = ctx.executionContext;
-    if (!executionContext?.projectId) {
-      return { output: 'This action requires an active project room or explicit project slug.', success: false, error: 'missing_project_context' };
-    }
-    if (!executionContext.principalId) {
+    if (!executionContext || !executionContext.principalId) {
       return { output: '', success: false, error: 'Missing principal execution context.' };
     }
-    const project = input.projectSlug
-      ? projectRegistry.findBySlug(input.projectSlug)
-      : projectRegistry.get(executionContext.projectId);
+    const project = resolveProjectForToolContext({
+      explicitProjectSlug: input.projectSlug,
+      executionContext,
+      sessionId: ctx.sessionId,
+    });
     if (!project) {
-      return { output: '', success: false, error: `Project not found${input.projectSlug ? `: ${input.projectSlug}` : ''}.` };
+      return {
+        output: 'There is no active or recently created project in this conversation yet. Move to the project room, or specify the project slug.',
+        success: false,
+        error: 'missing_project_context',
+      };
     }
     const actorRole = getProjectRole(projectMemberships, project.projectId, executionContext.principalId);
     const isOwner = project.ownerPrincipalId === executionContext.principalId;
@@ -1449,10 +1484,20 @@ async function runStart(): Promise<void> {
       }).catch(() => {});
     }
 
+    if (ctx.sessionId) {
+      const sourceSession = sessions.get(ctx.sessionId);
+      if (sourceSession) {
+        sourceSession.metadata.recentProjectId = project.projectId;
+        sourceSession.metadata.recentProjectSlug = project.slug;
+        sourceSession.metadata.recentProjectRoomChannelId = createdChannel?.id ?? boundChannelTarget;
+        sourceSession.metadata.recentProjectRoomThreadId = createdThread?.id ?? boundThreadId;
+      }
+    }
+
     return {
       output: [
         existing ? `Bound existing project ${project.displayName} (${project.slug}).` : `Created project ${project.displayName} (${project.slug}).`,
-        createdChannel ? `Opened channel: ${createdChannel.id}` : null,
+        createdChannel ? `Opened private channel: ${createdChannel.id}` : null,
         createdThread ? `Opened thread: ${createdThread.id}` : null,
         !createdChannel && !createdThread ? (boundThreadId ? `Bound current thread: ${boundThreadId}` : 'Bound current channel.') : null,
         `Type: ${projectType}`,
@@ -1855,34 +1900,13 @@ async function runStart(): Promise<void> {
     promptBuilder.addSkillInstructions(loaded.instructions);
   }
 
-  // Build initial skill command specs (used by agent-loop dispatch + channel slash registration)
-  const skillCommandSpecs: SkillCommandSpec[] = buildSkillCommands(skillLoader.getAll());
-
-  // Hot reload — re-register tools, hooks, AND slash commands on skill changes
+  // Hot reload — re-register tools and hooks on skill changes
   skillLoader.startWatching(async (reloadedSkills) => {
     for (const skill of reloadedSkills) {
       skillLoader.registerTools(skill, toolRegistry);
       skillLoader.registerHooks(skill, hooks);
     }
     console.log(`[tako] Skills reloaded: ${reloadedSkills.length} skills`);
-
-    // Re-build and re-register skill commands with Discord
-    try {
-      const rebuiltSpecs = buildSkillCommands(reloadedSkills);
-      skillCommandSpecs.splice(0, skillCommandSpecs.length, ...rebuiltSpecs);
-
-      for (const dc of discordChannels) {
-        await dc.registerSkillCommands(skillCommandSpecs, async (commandName, channelId, author, guildId) => {
-          const agentId = dc.agentId ?? resolveAgentForChannel(agentRegistry.list(), 'discord', channelId);
-          return handleSlashCommand(commandName, channelId, author, agentId, dc, guildId);
-        });
-      }
-      if (discordChannels.length > 0) {
-        console.log(`[tako] Re-registered ${skillCommandSpecs.length} skill commands with Discord (${discordChannels.length} bot(s))`);
-      }
-    } catch (err) {
-      console.error('[tako] Failed to re-register skill commands:', err instanceof Error ? err.message : err);
-    }
   });
 
   // Retry queue for failed messages (all fallbacks exhausted)
@@ -1918,7 +1942,7 @@ async function runStart(): Promise<void> {
 
   // Agent loop with skill loader for dynamic injection
   const agentLoop = new AgentLoop(
-    { provider: failoverProvider, toolRegistry, promptBuilder, contextManager, hooks, skillLoader, skillCommandSpecs, model: config.providers.primary, workspaceRoot: config.memory.workspace, retryQueue, typingManager, reactionManager, streamingConfig: config.agent.streaming, compactor: sessionCompactor },
+    { provider: failoverProvider, toolRegistry, promptBuilder, contextManager, hooks, skillLoader, model: config.providers.primary, workspaceRoot: config.memory.workspace, retryQueue, typingManager, reactionManager, streamingConfig: config.agent.streaming, compactor: sessionCompactor },
     {
       timeout: config.agent.timeout,
       ...(config.agent.maxOutputChars != null && { maxOutputChars: config.agent.maxOutputChars }),
@@ -1942,10 +1966,8 @@ async function runStart(): Promise<void> {
   // Per-agent loops: each agent gets its own PromptBuilder (workspace) but shares
   // the same provider (auth), toolRegistry, contextManager, and hooks.
   // Agents with per-agent skill dirs get their own SkillLoader; otherwise they
-  // share the global skillLoader and skillCommandSpecs.
+  // share the global skillLoader.
   const agentLoops = new Map<string, AgentLoop>();
-  // Track per-agent skill command specs for channel slash-command registration.
-  const agentSkillCommandSpecsMap = new Map<string, SkillCommandSpec[]>();
   for (const agent of agentRegistry.list()) {
     if (agent.isMain) continue;
     const agentPromptBuilder = new PromptBuilder(agent.workspace);
@@ -1959,7 +1981,6 @@ async function runStart(): Promise<void> {
 
     // Build per-agent skill loader when agent has extra skill dirs
     let agentSkillLoader = skillLoader;
-    let agentSkillCommandSpecs = skillCommandSpecs;
     if (agent.skills?.dirs && agent.skills.dirs.length > 0) {
       const agentSkillDirs = [...config.skills.dirs, ...agent.skills.dirs];
       agentSkillLoader = new SkillLoader(agentSkillDirs);
@@ -1969,11 +1990,8 @@ async function runStart(): Promise<void> {
         agentSkillLoader.registerTools(loaded, toolRegistry);
         agentSkillLoader.registerHooks(loaded, hooks);
       }
-      agentSkillCommandSpecs = buildSkillCommands(agentSkillLoader.getAll());
-      console.log(`[tako] Agent "${agent.id}" using ${agentSkillDirs.length} skill dir(s), ${agentSkillCommandSpecs.length} skill command(s)`);
+      console.log(`[tako] Agent "${agent.id}" using ${agentSkillDirs.length} skill dir(s)`);
     }
-    // Store per-agent specs so channel setup below can use them
-    agentSkillCommandSpecsMap.set(agent.id, agentSkillCommandSpecs);
 
     const loop = new AgentLoop(
       {
@@ -1983,7 +2001,6 @@ async function runStart(): Promise<void> {
         contextManager,
         hooks,
         skillLoader: agentSkillLoader,
-        skillCommandSpecs: agentSkillCommandSpecs,
         model: agentModel,
         workspaceRoot: agent.workspace,
         agentId: agent.id,
@@ -3128,8 +3145,6 @@ async function runStart(): Promise<void> {
     }).catch(() => {});
   });
 
-  const isSkillSlashCommand = (name: string): boolean => skillCommandSpecs.some((s) => s.name === name);
-
   const handleSlashCommand = async (
     commandName: string,
     channelId: string,
@@ -3229,17 +3244,7 @@ async function runStart(): Promise<void> {
       session,
     });
     if (cmdResult !== null) return cmdResult;
-
-    // If this slash command came from a user-invocable skill, run it through AgentLoop
-    if (!isSkillSlashCommand(commandName)) return null;
-
-    const activeLoop = getAgentLoop(agentId);
-    activeLoop.setChannel(boundChannel);
-    let response = '';
-    for await (const chunk of activeLoop.run(session, `/${commandName}`)) {
-      response += chunk;
-    }
-    return response || 'Done.';
+    return null;
   };
 
   // Build native command list from the command registry
@@ -3256,12 +3261,6 @@ async function runStart(): Promise<void> {
 
     // Register native Discord slash commands
     discordChannel.setSlashCommands(nativeCommandList, async (commandName, channelId, author, guildId) => {
-      const agentId = resolveAgentForChannel(agentRegistry.list(), 'discord', channelId);
-      return handleSlashCommand(commandName, channelId, author, agentId, discordChannel!, guildId);
-    });
-
-    // Merge user-invocable skills into slash commands before connect (single registration on ready)
-    await discordChannel.registerSkillCommands(skillCommandSpecs, async (commandName, channelId, author, guildId) => {
       const agentId = resolveAgentForChannel(agentRegistry.list(), 'discord', channelId);
       return handleSlashCommand(commandName, channelId, author, agentId, discordChannel!, guildId);
     });
@@ -3490,12 +3489,6 @@ async function runStart(): Promise<void> {
 
       // Register slash commands for this agent's bot too
       agentDiscord.setSlashCommands(nativeCommandList, async (commandName, channelId, author, guildId) => {
-        return handleSlashCommand(commandName, channelId, author, agent.id, agentDiscord, guildId);
-      });
-
-      // Merge user-invocable skill commands before connect (use agent-specific specs if available)
-      const agentSpecificSkillSpecs = agentSkillCommandSpecsMap.get(agent.id) ?? skillCommandSpecs;
-      await agentDiscord.registerSkillCommands(agentSpecificSkillSpecs, async (commandName, channelId, author, guildId) => {
         return handleSlashCommand(commandName, channelId, author, agent.id, agentDiscord, guildId);
       });
 
@@ -4008,25 +4001,6 @@ async function runStart(): Promise<void> {
         skillLoader.registerHooks(loaded, hooks);
       }
       console.log(`[tako] Config reload complete. Skills: ${newManifests.length}`);
-
-      // Re-register skill commands with Discord after reload
-      if (discordChannels.length > 0) {
-        try {
-          const loadedAfterReload = skillLoader.getAll();
-          const rebuiltSpecs = buildSkillCommands(loadedAfterReload);
-          skillCommandSpecs.splice(0, skillCommandSpecs.length, ...rebuiltSpecs);
-
-          for (const dc of discordChannels) {
-            await dc.registerSkillCommands(skillCommandSpecs, async (commandName, channelId, author, guildId) => {
-              const agentId = dc.agentId ?? resolveAgentForChannel(agentRegistry.list(), 'discord', channelId);
-              return handleSlashCommand(commandName, channelId, author, agentId, dc, guildId);
-            });
-          }
-          console.log(`[tako] Re-registered ${skillCommandSpecs.length} skill commands with Discord (${discordChannels.length} bot(s))`);
-        } catch (err) {
-          console.error('[tako] Failed to re-register commands:', err instanceof Error ? err.message : err);
-        }
-      }
 
       // Update gateway status info
       gateway.setStatusInfo({

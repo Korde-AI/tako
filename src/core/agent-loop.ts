@@ -29,8 +29,6 @@ import type { Channel } from '../channels/channel.js';
 import { isToolAllowed, getRole } from '../agents/roles.js';
 import { scanSecrets, checkRateLimit, sanitizeInput, getToolValidator } from './security.js';
 import { parseCommand } from '../commands/parser.js';
-import { dispatchSkillCommand, type DispatchContext } from '../commands/dispatch.js';
-import type { SkillCommandSpec } from '../commands/skill-commands.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import { TypingManager } from './typing.js';
 import { readFile } from 'node:fs/promises';
@@ -174,8 +172,6 @@ export interface AgentLoopDeps {
   agentId?: string;
   /** Command registry for built-in slash commands */
   commandRegistry?: CommandRegistry;
-  /** Skill command specs for dispatch routing */
-  skillCommandSpecs?: SkillCommandSpec[];
   /** Progress tracker for structured session progress */
   progressTracker?: ProgressTracker;
   /** Session init protocol configuration */
@@ -505,40 +501,6 @@ export class AgentLoop {
         }
       }
 
-      // Skill commands
-      if (this.deps.skillCommandSpecs && this.deps.skillCommandSpecs.length > 0 && skillLoader) {
-        const dispatchCtx: DispatchContext = {
-          toolRegistry,
-          skillLoader,
-          toolContext: {
-            sessionId: session.id,
-            workDir: this.deps.workspaceRoot ?? process.cwd(),
-            workspaceRoot: this.deps.workspaceRoot ?? process.cwd(),
-            agentId: this.deps.agentId,
-            agentRole: this.deps.agentRole ?? 'admin',
-            executionContext: session.metadata?.executionContext as import('./execution-context.js').ExecutionContext | undefined,
-          },
-        };
-        const result = await dispatchSkillCommand(parsed, this.deps.skillCommandSpecs, dispatchCtx);
-
-        if (result.kind === 'tool-result') {
-          this.deps.typingManager?.stop(chatId);
-          yield result.response ?? '';
-          return;
-        }
-
-        if (result.kind === 'skill-inject') {
-          // Rewrite userMessage with the args and inject skill instructions below
-          userMessage = result.forwardMessage ?? userMessage;
-          // We'll inject the skill instructions when building the system prompt
-          // Store it so the prompt builder can pick it up
-          session.metadata = {
-            ...session.metadata,
-            _injectedSkillInstructions: result.instructions,
-            _injectedSkillName: result.skillName,
-          };
-        }
-      }
     }
 
     // 1d. Transition reaction to processing

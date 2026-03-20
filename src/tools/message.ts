@@ -105,6 +105,10 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
           type: 'string',
           description: 'Emoji to react with (for "react" action)',
         },
+        private: {
+          type: 'boolean',
+          description: 'When true for Discord channel-create, create a private channel visible to the current requester and bot only',
+        },
       },
       required: ['action', 'platform'],
     },
@@ -122,6 +126,7 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
         parentId?: string;
         messageId?: string;
         emoji?: string;
+        private?: boolean;
       };
 
       // Resolve "current" target → use the session's active channel
@@ -218,6 +223,7 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
             const channel = await discord!.createChannel(guildId, p.name, {
               topic: p.topic,
               parentId: inferDiscordParentId(),
+              privateUserId: p.private ? ctx.executionContext?.authorId : undefined,
             });
 
             return {

@@ -1,28 +1,19 @@
 /**
  * Command dispatcher — routes parsed commands to the appropriate handler.
  *
- * Supports two dispatch modes:
- * - tool dispatch: call a tool directly, return result (no model turn)
- * - model dispatch (default): inject skill instructions into system prompt,
- *   forward to agent loop as a normal message
+ * Returns skill instructions for injection into a model-driven turn.
  */
 
 import type { ParsedCommand } from './parser.js';
 import type { SkillCommandSpec } from './skill-commands.js';
-import type { ToolRegistry } from '../tools/registry.js';
-import type { ToolContext } from '../tools/tool.js';
 import type { SkillLoader } from '../skills/loader.js';
 
 /**
  * Context provided to the command dispatcher.
  */
 export interface DispatchContext {
-  /** Tool registry for direct tool execution */
-  toolRegistry: ToolRegistry;
   /** Skill loader for looking up skill instructions */
   skillLoader: SkillLoader;
-  /** Tool execution context */
-  toolContext: ToolContext;
 }
 
 /**
@@ -30,9 +21,7 @@ export interface DispatchContext {
  */
 export interface DispatchResult {
   /** How the command was handled */
-  kind: 'tool-result' | 'skill-inject' | 'not-found';
-  /** Direct response text (for tool-result) */
-  response?: string;
+  kind: 'skill-inject' | 'not-found';
   /** Skill name to inject (for skill-inject) */
   skillName?: string;
   /** Instructions to inject into system prompt (for skill-inject) */
@@ -44,8 +33,7 @@ export interface DispatchResult {
 /**
  * Dispatch a parsed command against registered skill commands.
  *
- * - If the command maps to a tool-dispatch skill, execute the tool directly.
- * - If the command maps to a model-dispatch skill, return instructions for injection.
+ * Returns instructions for injection if a matching skill is found.
  * - Returns not-found if no skill command matches.
  */
 export async function dispatchSkillCommand(
@@ -71,34 +59,6 @@ export async function dispatchSkillCommand(
     return { kind: 'not-found' };
   }
 
-  // Tool dispatch — execute directly, no model turn
-  if (spec.dispatch?.kind === 'tool') {
-    const tool = context.toolRegistry.getTool(spec.dispatch.toolName);
-    if (!tool) {
-      return {
-        kind: 'tool-result',
-        response: `Tool "${spec.dispatch.toolName}" not found for skill "${spec.skillName}".`,
-      };
-    }
-
-    try {
-      const result = await tool.execute(
-        spec.dispatch.argMode === 'raw' ? { input: args } : { input: args },
-        context.toolContext,
-      );
-      return {
-        kind: 'tool-result',
-        response: result.output,
-      };
-    } catch (err) {
-      return {
-        kind: 'tool-result',
-        response: `Error executing ${spec.dispatch.toolName}: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-  }
-
-  // Model dispatch — inject skill instructions, forward message to agent loop
   const skill = context.skillLoader.get(spec.skillName);
   if (!skill) {
     return { kind: 'not-found' };

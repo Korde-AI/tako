@@ -3,7 +3,7 @@
  * - Command parser (valid commands, non-commands, edge cases)
  * - Name sanitization and deduplication
  * - Registry lookup and skill command building
- * - Dispatch routing (model vs tool)
+ * - Skill injection routing
  */
 
 import { describe, it } from 'node:test';
@@ -13,7 +13,6 @@ import { parseCommand } from '../src/commands/parser.js';
 import { sanitizeCommandName, buildSkillCommands, type SkillCommandSpec } from '../src/commands/skill-commands.js';
 import { dispatchSkillCommand, type DispatchContext } from '../src/commands/dispatch.js';
 import type { LoadedSkill, SkillManifest } from '../src/skills/types.js';
-import type { Tool, ToolContext, ToolResult } from '../src/tools/tool.js';
 
 // ─── Command parser ─────────────────────────────────────────────────
 
@@ -153,48 +152,20 @@ describe('buildSkillCommands', () => {
     assert.ok(specs[0].description.endsWith('...'));
   });
 
-  it('builds dispatch config from manifest', () => {
-    const skills = [
-      makeLoadedSkill({
-        name: 'tool-skill',
-        commandDispatch: 'tool',
-        commandTool: 'exec',
-        commandArgMode: 'raw',
-      }),
-    ];
-    const specs = buildSkillCommands(skills);
-    assert.ok(specs[0].dispatch);
-    assert.equal(specs[0].dispatch!.kind, 'tool');
-    assert.equal(specs[0].dispatch!.toolName, 'exec');
-    assert.equal(specs[0].dispatch!.argMode, 'raw');
-  });
-
-  it('defaults to no dispatch (model mode)', () => {
+  it('builds command specs without direct dispatch metadata', () => {
     const skills = [makeLoadedSkill({ name: 'model-skill' })];
     const specs = buildSkillCommands(skills);
-    assert.equal(specs[0].dispatch, undefined);
+    assert.deepEqual(specs[0], {
+      name: 'model_skill',
+      skillName: 'model-skill',
+      description: 'Test skill',
+    });
   });
 });
 
 // ─── Dispatch routing ───────────────────────────────────────────────
 
 describe('dispatchSkillCommand', () => {
-  const mockTool: Tool = {
-    name: 'mock_tool',
-    description: 'A mock tool',
-    parameters: { type: 'object', properties: {} },
-    async execute(params: unknown): Promise<ToolResult> {
-      const input = (params as Record<string, string>).input ?? '';
-      return { output: `mock result: ${input}`, success: true };
-    },
-  };
-
-  const mockToolRegistry = {
-    getTool(name: string) {
-      return name === 'mock_tool' ? mockTool : undefined;
-    },
-  } as any;
-
   const mockSkillLoader = {
     get(name: string) {
       if (name === 'model-skill') {
@@ -210,13 +181,7 @@ describe('dispatchSkillCommand', () => {
   } as any;
 
   const dispatchCtx: DispatchContext = {
-    toolRegistry: mockToolRegistry,
     skillLoader: mockSkillLoader,
-    toolContext: {
-      sessionId: 'test',
-      workDir: '/tmp',
-      workspaceRoot: '/tmp',
-    },
   };
 
   it('returns not-found for unknown commands', async () => {
@@ -229,25 +194,7 @@ describe('dispatchSkillCommand', () => {
     assert.equal(result.kind, 'not-found');
   });
 
-  it('dispatches tool commands directly', async () => {
-    const specs: SkillCommandSpec[] = [
-      {
-        name: 'tool_cmd',
-        skillName: 'tool-cmd',
-        description: 'Tool command',
-        dispatch: { kind: 'tool', toolName: 'mock_tool', argMode: 'raw' },
-      },
-    ];
-    const result = await dispatchSkillCommand(
-      { command: 'tool_cmd', args: 'hello', raw: '/tool_cmd hello' },
-      specs,
-      dispatchCtx,
-    );
-    assert.equal(result.kind, 'tool-result');
-    assert.equal(result.response, 'mock result: hello');
-  });
-
-  it('returns skill-inject for model-dispatch commands', async () => {
+  it('returns skill-inject for matching commands', async () => {
     const specs: SkillCommandSpec[] = [
       {
         name: 'model_skill',
@@ -284,13 +231,12 @@ describe('dispatchSkillCommand', () => {
     assert.equal(result.forwardMessage, 'some input');
   });
 
-  it('returns error for tool dispatch with missing tool', async () => {
+  it('returns not-found when the named skill is unavailable', async () => {
     const specs: SkillCommandSpec[] = [
       {
         name: 'bad_tool',
         skillName: 'bad-tool',
         description: 'Bad tool',
-        dispatch: { kind: 'tool', toolName: 'nonexistent', argMode: 'raw' },
       },
     ];
     const result = await dispatchSkillCommand(
@@ -298,7 +244,6 @@ describe('dispatchSkillCommand', () => {
       specs,
       dispatchCtx,
     );
-    assert.equal(result.kind, 'tool-result');
-    assert.ok(result.response?.includes('not found'));
+    assert.equal(result.kind, 'not-found');
   });
 });

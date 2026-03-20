@@ -4,8 +4,6 @@ description: Project orchestration — poll GitHub issues, spawn agents per issu
 version: 0.1.0
 author: Tako
 user-invocable: true
-command-dispatch: tool
-command-tool: symphony
 triggers:
   - type: keyword
     value: symphony

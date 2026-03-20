@@ -4,9 +4,6 @@ description: ACP harness router (acpx-backed) for Codex/Claude/Pi/OpenCode/Gemin
 version: 0.1.0
 author: Tako
 user-invocable: true
-command-dispatch: tool
-command-tool: acp_router
-command-arg-mode: raw
 triggers:
   - type: keyword
     value: acp

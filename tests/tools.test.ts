@@ -318,11 +318,11 @@ describe('memory tools', () => {
 
 describe('message tools', () => {
   it('infers Discord guild and parent channel from execution context for channel creation', async () => {
-    let seen: { guildId: string; name: string; topic?: string; parentId?: string } | null = null;
+    let seen: { guildId: string; name: string; topic?: string; parentId?: string; privateUserId?: string } | null = null;
     const tools = createMessageTools({
       resolveDiscord: () => ({
-        createChannel: async (guildId: string, name: string, opts?: { topic?: string; parentId?: string }) => {
-          seen = { guildId, name, topic: opts?.topic, parentId: opts?.parentId };
+        createChannel: async (guildId: string, name: string, opts?: { topic?: string; parentId?: string; privateUserId?: string }) => {
+          seen = { guildId, name, topic: opts?.topic, parentId: opts?.parentId, privateUserId: opts?.privateUserId };
           return { id: '123', name };
         },
       } as any),
@@ -331,7 +331,7 @@ describe('message tools', () => {
     assert.ok(messageTool);
 
     const result = await messageTool!.execute(
-      { action: 'channel-create', platform: 'discord', name: 'callgo', topic: 'project room' },
+      { action: 'channel-create', platform: 'discord', name: 'callgo', topic: 'project room', private: true },
       {
         sessionId: 'session-1',
         workDir: '/tmp',
@@ -347,6 +347,7 @@ describe('message tools', () => {
             guildId: 'guild-1',
             parentChannelId: 'parent-chan-1',
           },
+          authorId: 'user-1',
         },
       },
     );
@@ -357,6 +358,7 @@ describe('message tools', () => {
       name: 'callgo',
       topic: 'project room',
       parentId: 'parent-chan-1',
+      privateUserId: 'user-1',
     });
   });
 });

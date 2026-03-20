@@ -32,12 +32,6 @@ export interface SkillManifest {
   userInvocable?: boolean;
   /** Whether to exclude from automatic model invocation */
   disableModelInvocation?: boolean;
-  /** Command dispatch mode — 'tool' bypasses model */
-  commandDispatch?: 'tool';
-  /** Tool name for direct dispatch */
-  commandTool?: string;
-  /** Argument mode for tool dispatch */
-  commandArgMode?: 'raw';
   /** Platform requirements */
   requires?: SkillRequirements;
   /** Path to the SKILL.md file */

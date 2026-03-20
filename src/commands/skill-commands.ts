@@ -2,7 +2,7 @@
  * Skill command builder — generates command specs from loaded skills.
  *
  * Scans loaded skills for userInvocable !== false, sanitizes names,
- * handles deduplication, and reads dispatch configuration from frontmatter.
+ * handles deduplication for optional operator surfaces.
  */
 
 import type { LoadedSkill } from '../skills/types.js';
@@ -17,12 +17,6 @@ export interface SkillCommandSpec {
   skillName: string;
   /** Truncated description (max 100 chars) */
   description: string;
-  /** Direct dispatch config (bypasses model) */
-  dispatch?: {
-    kind: 'tool';
-    toolName: string;
-    argMode: 'raw';
-  };
 }
 
 /**
@@ -69,16 +63,6 @@ export function buildSkillCommands(skills: LoadedSkill[]): SkillCommandSpec[] {
       skillName: skill.manifest.name,
       description,
     };
-
-    // Build dispatch config from frontmatter
-    const m = skill.manifest;
-    if (m.commandDispatch === 'tool' && m.commandTool) {
-      spec.dispatch = {
-        kind: 'tool',
-        toolName: m.commandTool,
-        argMode: m.commandArgMode ?? 'raw',
-      };
-    }
 
     specs.push(spec);
   }
