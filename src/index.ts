@@ -123,7 +123,7 @@ import { CacheManager } from './cache/manager.js';
 import { setFsCacheManager } from './tools/fs.js';
 import { setExecCacheManager } from './tools/exec.js';
 import { setImageProvider } from './tools/image.js';
-import { createProjectTools, type ProjectBootstrapRequest, type ProjectMemberManageRequest } from './tools/projects.js';
+import { createProjectTools, type ProjectBootstrapRequest, type ProjectMemberManageRequest, type ProjectSyncRequest } from './tools/projects.js';
 import { runSymphony } from './cli/symphony.js';
 import { ExtensionRegistry } from './skills/extension-registry.js';
 import { loadExtension, getSkillsWithExtension } from './skills/extension-loader.js';
@@ -810,6 +810,8 @@ async function runStart(): Promise<void> {
   const activateCollaborativeProject = async (projectId: string, reason: string): Promise<Project | null> => {
     const project = projectRegistry.get(projectId);
     if (!project) return null;
+    const memberCount = projectMemberships.listByProject(projectId).length;
+    if (memberCount <= 1) return project;
     if (project.collaboration?.mode === 'collaborative') return project;
     const updated = await projectRegistry.update(projectId, {
       collaboration: {
@@ -1050,7 +1052,9 @@ async function runStart(): Promise<void> {
     return {
       output: [
         `Added ${resolved.displayName} to ${project.displayName} (${project.slug}) as ${role}.`,
-        updatedProject?.collaboration?.mode === 'collaborative' ? 'Project mode: collaborative.' : null,
+        updatedProject?.collaboration?.mode === 'collaborative'
+          ? 'Project mode: collaborative.'
+          : 'Project mode remains single-user until more than one member exists.',
         background ? `Background: ${background.summary.split('\n')[0]}` : null,
       ].filter(Boolean).join('\n'),
       success: true,
@@ -1058,6 +1062,60 @@ async function runStart(): Promise<void> {
         projectId: project.projectId,
         principalId: resolved.principalId,
         role,
+      },
+    };
+  };
+
+  const syncDiscordProjectFromTool = async (
+    input: ProjectSyncRequest,
+    ctx: import('./tools/tool.js').ToolContext,
+  ): Promise<import('./tools/tool.js').ToolResult> => {
+    const executionContext = ctx.executionContext;
+    if (!executionContext?.projectId) {
+      return { output: 'This action requires an active project room or explicit project slug.', success: false, error: 'missing_project_context' };
+    }
+    if (!executionContext.principalId) {
+      return { output: '', success: false, error: 'Missing principal execution context.' };
+    }
+    const project = input.projectSlug
+      ? projectRegistry.findBySlug(input.projectSlug)
+      : projectRegistry.get(executionContext.projectId);
+    if (!project) {
+      return { output: '', success: false, error: `Project not found${input.projectSlug ? `: ${input.projectSlug}` : ''}.` };
+    }
+    if (!isProjectMember(projectMemberships, project.projectId, executionContext.principalId)) {
+      return { output: 'Only project members can sync project state.', success: false, error: 'project_membership_required' };
+    }
+
+    const projectRoot = resolveProjectRoot(runtimePaths, project);
+    const statusPath = join(projectRoot, 'STATUS.md');
+    const update = input.update?.trim();
+    if (update) {
+      const prior = existsSync(statusPath) ? await readFile(statusPath, 'utf-8') : '# STATUS\n';
+      const stamp = new Date().toISOString();
+      const appended = `${prior.trimEnd()}\n\n## Sync Notes\n- ${stamp} — ${update}\n`;
+      await writeFile(statusPath, appended, 'utf-8');
+    }
+
+    const background = await buildProjectBackground(project.projectId, update ? 'project_sync:update' : 'project_sync');
+    const summaryLine = background?.summary.split('\n')[0] ?? `Project ${project.displayName} (${project.slug})`;
+    const announce = [
+      `[sync] ${summaryLine}`,
+      update ? `Update: ${update}` : null,
+    ].filter(Boolean).join('\n');
+    await notifyBoundDiscordChannels(project.projectId, announce);
+
+    return {
+      output: [
+        `Synced ${project.displayName} (${project.slug}).`,
+        update ? 'STATUS.md updated.' : null,
+        background ? `Background: ${summaryLine}` : null,
+      ].filter(Boolean).join('\n'),
+      success: true,
+      data: {
+        projectId: project.projectId,
+        projectSlug: project.slug,
+        statusPath,
       },
     };
   };
@@ -1590,6 +1648,7 @@ async function runStart(): Promise<void> {
   toolRegistry.registerAll(createProjectTools({
     bootstrapFromPrompt: bootstrapDiscordProjectFromTool,
     manageMember: manageDiscordProjectMemberFromTool,
+    syncProject: syncDiscordProjectFromTool,
   }));
 
   // ACP runtime (acpx-backed coding agent sessions)

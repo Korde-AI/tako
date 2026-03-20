@@ -15,9 +15,15 @@ export interface ProjectMemberManageRequest {
   projectSlug?: string;
 }
 
+export interface ProjectSyncRequest {
+  update?: string;
+  projectSlug?: string;
+}
+
 export interface ProjectToolDeps {
   bootstrapFromPrompt: (input: ProjectBootstrapRequest, ctx: ToolContext) => Promise<ToolResult>;
   manageMember: (input: ProjectMemberManageRequest, ctx: ToolContext) => Promise<ToolResult>;
+  syncProject: (input: ProjectSyncRequest, ctx: ToolContext) => Promise<ToolResult>;
 }
 
 export function createProjectTools(deps: ProjectToolDeps): Tool[] {
@@ -53,7 +59,11 @@ export function createProjectTools(deps: ProjectToolDeps): Tool[] {
       required: ['prompt'],
     },
     async execute(params: unknown, ctx: ToolContext): Promise<ToolResult> {
-      return deps.bootstrapFromPrompt(params as ProjectBootstrapRequest, ctx);
+      const raw = params as { input?: string };
+      const parsed = (raw?.input && typeof raw.input === 'string')
+        ? { prompt: raw.input }
+        : params as ProjectBootstrapRequest;
+      return deps.bootstrapFromPrompt(parsed, ctx);
     },
   };
 
@@ -85,9 +95,48 @@ export function createProjectTools(deps: ProjectToolDeps): Tool[] {
       required: ['action'],
     },
     async execute(params: unknown, ctx: ToolContext): Promise<ToolResult> {
+      const raw = params as { input?: string };
+      if (raw?.input && typeof raw.input === 'string') {
+        const input = raw.input.trim();
+        const lower = input.toLowerCase();
+        if (!input || lower === 'list' || lower.includes('who is in') || lower.includes('list members')) {
+          return deps.manageMember({ action: 'list' }, ctx);
+        }
+        const targetIdentity = input
+          .replace(/^(add|invite)\s+/i, '')
+          .replace(/\s+(to|into)\s+this project.*$/i, '')
+          .replace(/\s+as\s+.*/i, '')
+          .trim();
+        return deps.manageMember({ action: 'add', targetIdentity, role: 'contribute' }, ctx);
+      }
       return deps.manageMember(params as ProjectMemberManageRequest, ctx);
     },
   };
 
-  return [projectBootstrap, projectMemberManage];
+  const projectSync: Tool = {
+    name: 'project_sync',
+    description: 'Sync shared project state for the current project. Use this to rebuild the project background, announce a concise progress update, and optionally append an update note into STATUS.md.',
+    parameters: {
+      type: 'object',
+      properties: {
+        update: {
+          type: 'string',
+          description: 'Optional progress note to append to STATUS.md and announce in the bound room.',
+        },
+        projectSlug: {
+          type: 'string',
+          description: 'Optional project slug override. Omit to use the current project room.',
+        },
+      },
+    },
+    async execute(params: unknown, ctx: ToolContext): Promise<ToolResult> {
+      const raw = params as { input?: string };
+      const parsed = (raw?.input && typeof raw.input === 'string')
+        ? { update: raw.input }
+        : params as ProjectSyncRequest;
+      return deps.syncProject(parsed, ctx);
+    },
+  };
+
+  return [projectBootstrap, projectMemberManage, projectSync];
 }

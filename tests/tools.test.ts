@@ -86,9 +86,10 @@ describe('ToolRegistry', () => {
     const tools = createProjectTools({
       bootstrapFromPrompt: async () => ({ output: 'ok', success: true }),
       manageMember: async () => ({ output: 'ok', success: true }),
+      syncProject: async () => ({ output: 'ok', success: true }),
     });
     const names = tools.map((tool) => tool.name).sort();
-    assert.deepEqual(names, ['project_bootstrap', 'project_member_manage']);
+    assert.deepEqual(names, ['project_bootstrap', 'project_member_manage', 'project_sync']);
   });
 
   it('registers office extraction tool', () => {
