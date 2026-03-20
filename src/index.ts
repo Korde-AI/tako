@@ -147,6 +147,7 @@ import type { ProjectRole, Project } from './projects/types.js';
 import { bootstrapProjectHome } from './projects/bootstrap.js';
 import {
   defaultProjectArtifactsRoot,
+  defaultProjectWorktreeRoot,
   projectApprovalsRoot,
   projectBackgroundRoot,
   projectBranchesRoot,
@@ -703,6 +704,40 @@ async function runStart(): Promise<void> {
       }
     }
     const session = input.sessionId ? sessions.get(input.sessionId) : undefined;
+    if (input.executionContext?.platform && input.executionContext.channelTarget) {
+      const sessionRecentProjectId = typeof session?.metadata?.recentProjectId === 'string'
+        ? session.metadata.recentProjectId
+        : undefined;
+      const sessionRecentProjectSlug = typeof session?.metadata?.recentProjectSlug === 'string'
+        ? session.metadata.recentProjectSlug
+        : undefined;
+      const sessionRecentChannelId = typeof session?.metadata?.recentProjectRoomChannelId === 'string'
+        ? session.metadata.recentProjectRoomChannelId
+        : undefined;
+      const sessionRecentThreadId = typeof session?.metadata?.recentProjectRoomThreadId === 'string'
+        ? session.metadata.recentProjectRoomThreadId
+        : undefined;
+      const metadata = input.executionContext.metadata ?? {};
+      const currentChannelTarget = typeof metadata['parentChannelId'] === 'string'
+        ? metadata['parentChannelId']
+        : input.executionContext.channelTarget;
+      const currentThreadId = typeof metadata['threadId'] === 'string'
+        ? metadata['threadId']
+        : input.executionContext.threadId;
+      const sameRecentRoom = sessionRecentChannelId
+        && sessionRecentChannelId === currentChannelTarget
+        && (sessionRecentThreadId ?? undefined) === (currentThreadId ?? undefined);
+      if (sameRecentRoom) {
+        if (sessionRecentProjectId) {
+          const project = projectRegistry.get(sessionRecentProjectId);
+          if (project) return project;
+        }
+        if (sessionRecentProjectSlug) {
+          const project = projectRegistry.findBySlug(sessionRecentProjectSlug);
+          if (project) return project;
+        }
+      }
+    }
     const recentProjectId = typeof session?.metadata?.recentProjectId === 'string'
       ? session.metadata.recentProjectId
       : undefined;
@@ -716,6 +751,90 @@ async function runStart(): Promise<void> {
       return projectRegistry.findBySlug(recentProjectSlug);
     }
     return null;
+  };
+
+  const ensureLocalProjectMirror = async (input: {
+    project: Project;
+    source: 'invite_accept' | 'project_sync';
+    inviteId?: string;
+    hostNodeId?: string;
+    hostNodeName?: string;
+    offeredRole?: ProjectRole;
+    sharedDocs?: Record<string, string>;
+  }): Promise<{ projectRoot: string; worktreeRoot: string; created: boolean }> => {
+    await bootstrapProjectHome(runtimePaths.projectsDir, input.project);
+    const projectRoot = resolveProjectRoot(runtimePaths, input.project);
+    const worktreeRoot = defaultProjectWorktreeRoot(runtimePaths, input.project.projectId, getNodeIdentity().nodeId);
+    const worktrees = new ProjectWorktreeRegistry(join(runtimePaths.projectsDir, input.project.projectId, 'worktrees'), input.project.projectId);
+    await worktrees.load();
+    const existingWorktree = worktrees.findByNode(getNodeIdentity().nodeId);
+    await worktrees.register({
+      nodeId: getNodeIdentity().nodeId,
+      root: worktreeRoot,
+      label: existingWorktree?.label ?? (input.source === 'invite_accept' ? 'network-joined' : 'node-local'),
+      ownerPrincipalId: existingWorktree?.ownerPrincipalId,
+      metadata: {
+        ...(existingWorktree?.metadata ?? {}),
+        source: input.source,
+        ...(input.inviteId ? { inviteId: input.inviteId } : {}),
+        ...(input.hostNodeId ? { hostNodeId: input.hostNodeId } : {}),
+      },
+    });
+
+    const projectDocPath = join(projectRoot, 'PROJECT.md');
+    const statusPath = join(projectRoot, 'STATUS.md');
+    const noticePath = join(projectRoot, 'NOTICE.md');
+    const sharedDocs = input.sharedDocs ?? {};
+    const created = !existsSync(projectDocPath) || !existsSync(statusPath) || !existsSync(noticePath) || !existingWorktree;
+
+    if (!existsSync(projectDocPath)) {
+      await writeFile(projectDocPath, sharedDocs['PROJECT.md'] ?? [
+        `# ${input.project.displayName}`,
+        '',
+        `- Slug: \`${input.project.slug}\``,
+        `- Project ID: \`${input.project.projectId}\``,
+        input.hostNodeId ? `- Imported from node: \`${input.hostNodeName ?? input.hostNodeId}\`` : null,
+        input.offeredRole ? `- Role on this node: \`${input.offeredRole}\`` : null,
+        '',
+        '## Local Node Workspace',
+        `- Workspace root: \`${projectRoot}\``,
+        `- Worktree root: \`${worktreeRoot}\``,
+        '',
+      ].filter(Boolean).join('\n'), 'utf-8');
+    }
+    if (!existsSync(statusPath)) {
+      await writeFile(statusPath, sharedDocs['STATUS.md'] ?? [
+        '# STATUS',
+        '',
+        '## Current Goal',
+        input.hostNodeId ? `- Sync shared project context from ${input.hostNodeName ?? input.hostNodeId}` : '- Review the current shared project state',
+        '',
+        '## In Progress',
+        '- Local workspace bootstrapped',
+        '- Local worktree registered',
+        '',
+        '## Next Actions',
+        '- Review PROJECT.md and shared coordination updates',
+        '- Sync or pull shared project artifacts if needed',
+        '',
+      ].join('\n'), 'utf-8');
+    }
+    if (!existsSync(noticePath)) {
+      await writeFile(noticePath, sharedDocs['NOTICE.md'] ?? [
+        '# NOTICE',
+        '',
+        input.inviteId
+          ? `Joined through invite \`${input.inviteId}\` from \`${input.hostNodeName ?? input.hostNodeId}\`.`
+          : 'This local project mirror was provisioned so this node has an active workspace and worktree.',
+        '',
+        '## Local Node Workspace',
+        `- Workspace root: \`${projectRoot}\``,
+        `- Worktree root: \`${worktreeRoot}\``,
+        '',
+      ].join('\n'), 'utf-8');
+    }
+
+    return { projectRoot, worktreeRoot, created };
   };
 
   const handleClosedProjectRoom = async (input: {
@@ -1173,20 +1292,14 @@ async function runStart(): Promise<void> {
       },
     });
 
-    await bootstrapProjectHome(runtimePaths.projectsDir, imported);
-    const projectRoot = resolveProjectRoot(runtimePaths, imported);
-    const worktreeRoot = join(runtimePaths.projectsDir, imported.projectId, 'worktrees', getNodeIdentity().nodeId);
-    const worktrees = new ProjectWorktreeRegistry(join(runtimePaths.projectsDir, imported.projectId, 'worktrees'), imported.projectId);
-    await worktrees.load();
-    await worktrees.register({
-      nodeId: getNodeIdentity().nodeId,
-      root: projectRoot,
-      label: 'network-joined',
-      metadata: {
-        source: 'discord_invite_accept',
-        inviteId: input.invite.inviteId,
-        hostNodeId: input.invite.hostNodeId,
-      },
+    const localMirror = await ensureLocalProjectMirror({
+      project: imported,
+      source: 'invite_accept',
+      inviteId: input.invite.inviteId,
+      hostNodeId: input.invite.hostNodeId,
+      hostNodeName: input.invite.hostNodeName,
+      offeredRole: input.invite.offeredRole,
+      sharedDocs,
     });
 
     const acceptedCtx = input.executionContext;
@@ -1212,23 +1325,7 @@ async function runStart(): Promise<void> {
         }
       }
     }
-
-    const projectDocPath = join(projectRoot, 'PROJECT.md');
-    const statusPath = join(projectRoot, 'STATUS.md');
-    const noticePath = join(projectRoot, 'NOTICE.md');
-    await writeFile(projectDocPath, sharedDocs['PROJECT.md'] ?? [
-      `# ${imported.displayName}`,
-      '',
-      `- Slug: \`${imported.slug}\``,
-      `- Project ID: \`${imported.projectId}\``,
-      `- Imported from node: \`${input.invite.hostNodeName ?? input.invite.hostNodeId}\``,
-      `- Role on this node: \`${input.invite.offeredRole}\``,
-      '',
-    ].join('\n'), 'utf-8');
-    await writeFile(statusPath, sharedDocs['STATUS.md'] ?? '# STATUS\n\n## In Progress\n- Local project mirror bootstrapped from invite\n', 'utf-8');
-    await writeFile(noticePath, sharedDocs['NOTICE.md'] ?? `# NOTICE\n\nJoined through invite \`${input.invite.inviteId}\` from \`${input.invite.hostNodeName ?? input.invite.hostNodeId}\`.\n`, 'utf-8');
-
-    return { projectId: imported.projectId, projectRoot, worktreeRoot };
+    return { projectId: imported.projectId, projectRoot: localMirror.projectRoot, worktreeRoot: localMirror.worktreeRoot };
   };
 
   const buildAgentAccessMetadata = async (input: {
@@ -1511,6 +1608,10 @@ async function runStart(): Promise<void> {
     }
 
     const projectRoot = resolveProjectRoot(runtimePaths, project);
+    const localMirror = await ensureLocalProjectMirror({
+      project,
+      source: 'project_sync',
+    });
     const statusPath = join(projectRoot, 'STATUS.md');
     const update = input.update?.trim();
     if (update && canWriteSharedState) {
@@ -1531,6 +1632,7 @@ async function runStart(): Promise<void> {
     return {
       output: [
         `Synced ${project.displayName} (${project.slug}).`,
+        localMirror.created ? `Provisioned local project workspace ${localMirror.projectRoot} and worktree ${localMirror.worktreeRoot}.` : null,
         update && canWriteSharedState ? 'STATUS.md updated.' : null,
         update && !canWriteSharedState ? 'Shared view announced without modifying project files.' : null,
         background ? `Background: ${summaryLine}` : null,
@@ -1976,6 +2078,15 @@ async function runStart(): Promise<void> {
       if (session) {
         session.metadata.recentProjectId = invite.projectId;
         session.metadata.recentProjectSlug = invite.projectSlug;
+        if (executionContext?.channelTarget) {
+          const metadata = executionContext.metadata ?? {};
+          session.metadata.recentProjectRoomChannelId = typeof metadata['parentChannelId'] === 'string'
+            ? metadata['parentChannelId']
+            : executionContext.channelTarget;
+          session.metadata.recentProjectRoomThreadId = typeof metadata['threadId'] === 'string'
+            ? metadata['threadId']
+            : executionContext.threadId;
+        }
         sessions.markSessionDirty(session.id);
       }
       const sharedDocNames = Object.keys((invite.metadata?.['sharedDocs'] as Record<string, string> | undefined) ?? {});
