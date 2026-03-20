@@ -11,6 +11,7 @@ import {
   GatewayIntentBits,
   Events,
   ChannelType,
+  PermissionFlagsBits,
   Partials,
   REST,
   Routes,
@@ -38,6 +39,10 @@ function maskName(name: string): string {
   return name.slice(0, 2) + '***' + name.slice(-3);
 }
 
+function normalizeDiscordChannelId(channelId: string): string {
+  return channelId.startsWith('discord:') ? channelId.slice('discord:'.length) : channelId;
+}
+
 /** Handler for native slash command interactions. */
 export type SlashCommandHandler = (
   commandName: string,
@@ -63,6 +68,12 @@ export type SelectMenuHandler = (interaction: StringSelectMenuInteraction) => Pr
 
 /** Handler for button interactions. */
 export type ButtonHandler = (interaction: ButtonInteraction) => Promise<boolean>;
+export type RoomClosedHandler = (input: {
+  channelId: string;
+  guildId?: string;
+  kind: 'channel' | 'thread';
+  reason: 'deleted' | 'archived';
+}) => Promise<void>;
 
 export interface DiscordChannelOpts {
   token: string;
@@ -84,6 +95,7 @@ export class DiscordChannel implements Channel {
   private modalHandlers: ModalSubmitHandler[] = [];
   private selectMenuHandlers: SelectMenuHandler[] = [];
   private buttonHandlers: ButtonHandler[] = [];
+  private roomClosedHandlers: RoomClosedHandler[] = [];
   private nativeCommands: Array<{ name: string; description: string }> = [];
   private previousSkillNames?: Set<string>;
   private reconnectAttempts = 0;
@@ -144,6 +156,39 @@ export class DiscordChannel implements Channel {
       }
     });
 
+    this.client.on(Events.ChannelDelete, async (channel) => {
+      const kind = channel.isThread() ? 'thread' : 'channel';
+      for (const handler of this.roomClosedHandlers) {
+        try {
+          await handler({
+            channelId: channel.id,
+            guildId: 'guildId' in channel ? channel.guildId ?? undefined : undefined,
+            kind,
+            reason: 'deleted',
+          });
+        } catch (err) {
+          console.error('[discord] Room-closed handler error:', err instanceof Error ? err.message : err);
+        }
+      }
+    });
+
+    this.client.on(Events.ThreadUpdate, async (oldThread, newThread) => {
+      if (!oldThread.archived && newThread.archived) {
+        for (const handler of this.roomClosedHandlers) {
+          try {
+            await handler({
+              channelId: newThread.id,
+              guildId: newThread.guildId ?? undefined,
+              kind: 'thread',
+              reason: 'archived',
+            });
+          } catch (err) {
+            console.error('[discord] Room-closed handler error:', err instanceof Error ? err.message : err);
+          }
+        }
+      }
+    });
+
     // Handle native slash command interactions
     this.client.on(Events.InteractionCreate, async (interaction) => {
       if (!interaction.isChatInputCommand()) return;
@@ -172,27 +217,44 @@ export class DiscordChannel implements Channel {
       }
 
       // Defer reply in case handler takes a moment
-      await cmdInteraction.deferReply();
+      try {
+        await cmdInteraction.deferReply();
 
-      const author = {
-        id: cmdInteraction.user.id,
-        name: cmdInteraction.user.displayName || cmdInteraction.user.username,
-        meta: {
-          discriminator: cmdInteraction.user.discriminator,
-          guildId: cmdInteraction.guild?.id,
-          guildName: cmdInteraction.guild?.name,
-        },
-      };
+        const author = {
+          id: cmdInteraction.user.id,
+          name: cmdInteraction.user.displayName || cmdInteraction.user.username,
+          meta: {
+            username: cmdInteraction.user.username,
+            discriminator: cmdInteraction.user.discriminator,
+            guildId: cmdInteraction.guild?.id,
+            guildName: cmdInteraction.guild?.name,
+            channelName: cmdInteraction.channel && 'name' in cmdInteraction.channel
+              ? (cmdInteraction.channel as { name?: string }).name ?? undefined
+              : undefined,
+          },
+        };
 
-      const channelId = cmdInteraction.channelId;
-      const result = await this.slashCommandHandler(
-        cmdInteraction.commandName,
-        channelId,
-        author,
-        cmdInteraction.guild?.id,
-      );
+        const channelId = cmdInteraction.channelId;
+        const result = await this.slashCommandHandler(
+          cmdInteraction.commandName,
+          channelId,
+          author,
+          cmdInteraction.guild?.id,
+        );
 
-      await cmdInteraction.editReply({ content: result || 'Done.' });
+        await cmdInteraction.editReply({ content: result || 'Done.' });
+      } catch (err) {
+        console.error('[discord] Slash command handler error:', err instanceof Error ? err.stack || err.message : err);
+        try {
+          if (cmdInteraction.deferred || cmdInteraction.replied) {
+            await cmdInteraction.editReply({ content: 'Command failed. Check Tako logs for the exact error.' });
+          } else {
+            await cmdInteraction.reply({ content: 'Command failed. Check Tako logs for the exact error.', ephemeral: true });
+          }
+        } catch {
+          // Ignore secondary Discord API failures; the original error is logged above.
+        }
+      }
     });
 
     // Handle modal submit interactions
@@ -428,10 +490,15 @@ export class DiscordChannel implements Channel {
         id: message.author.id,
         name: message.author.displayName || message.author.username,
         meta: {
+          username: message.author.username,
           discriminator: message.author.discriminator,
           guildId: message.guild?.id,
           guildName: message.guild?.name,
+          channelName: 'name' in message.channel ? message.channel.name ?? undefined : undefined,
           parentChannelId: maybeThread?.parentId ?? undefined,
+          parentChannelName: maybeThread?.parent?.isTextBased?.() && 'name' in maybeThread.parent
+            ? (maybeThread.parent as { name?: string }).name ?? undefined
+            : undefined,
         },
       },
       content: message.content,
@@ -486,7 +553,7 @@ export class DiscordChannel implements Channel {
   async createChannel(
     guildId: string,
     name: string,
-    opts?: { topic?: string; parentId?: string },
+    opts?: { topic?: string; parentId?: string; privateUserId?: string },
   ): Promise<{ id: string; name: string }> {
     if (!this.client) throw new Error('[discord] Not connected');
 
@@ -496,6 +563,38 @@ export class DiscordChannel implements Channel {
       type: ChannelType.GuildText,
       ...(opts?.topic ? { topic: opts.topic } : {}),
       ...(opts?.parentId ? { parent: opts.parentId } : {}),
+      ...(opts?.privateUserId
+        ? {
+            permissionOverwrites: [
+              {
+                id: guild.roles.everyone.id,
+                deny: [PermissionFlagsBits.ViewChannel],
+              },
+              {
+                id: opts.privateUserId,
+                allow: [
+                  PermissionFlagsBits.ViewChannel,
+                  PermissionFlagsBits.SendMessages,
+                  PermissionFlagsBits.ReadMessageHistory,
+                ],
+              },
+              ...(guild.members.me
+                ? [{
+                    id: guild.members.me.id,
+                    allow: [
+                      PermissionFlagsBits.ViewChannel,
+                      PermissionFlagsBits.SendMessages,
+                      PermissionFlagsBits.ReadMessageHistory,
+                      PermissionFlagsBits.ManageChannels,
+                      PermissionFlagsBits.CreatePublicThreads,
+                      PermissionFlagsBits.CreatePrivateThreads,
+                      PermissionFlagsBits.SendMessagesInThreads,
+                    ],
+                  }]
+                : []),
+            ],
+          }
+        : {}),
     };
 
     const channel = await guild.channels.create(createOpts);
@@ -670,6 +769,7 @@ export class DiscordChannel implements Channel {
 
   async sendTyping(channelId: string): Promise<void> {
     if (!this.client) return;
+    channelId = normalizeDiscordChannelId(channelId);
 
     // Discord channel IDs are snowflakes — numeric strings of 17-20 digits.
     // Guard against internal Tako UUIDs or other non-snowflake IDs being passed in
@@ -688,6 +788,7 @@ export class DiscordChannel implements Channel {
 
   async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
     if (!this.client) return;
+    channelId = normalizeDiscordChannelId(channelId);
 
     try {
       const channel = await this.client.channels.fetch(channelId);
@@ -702,6 +803,7 @@ export class DiscordChannel implements Channel {
 
   async removeReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
     if (!this.client) return;
+    channelId = normalizeDiscordChannelId(channelId);
 
     try {
       const channel = await this.client.channels.fetch(channelId);
@@ -777,6 +879,10 @@ export class DiscordChannel implements Channel {
   /** Register a handler for button interactions. */
   onButton(handler: ButtonHandler): void {
     this.buttonHandlers.push(handler);
+  }
+
+  onRoomClosed(handler: RoomClosedHandler): void {
+    this.roomClosedHandlers.push(handler);
   }
 
   /** Register slash commands with Discord API per guild (instant update). */

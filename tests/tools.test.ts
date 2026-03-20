@@ -14,6 +14,7 @@ import { execTool } from '../src/tools/exec.js';
 import { contentSearchTool } from '../src/tools/search.js';
 import type { ToolContext } from '../src/tools/tool.js';
 import { createMemoryTools } from '../src/tools/memory.js';
+import { createProjectTools } from '../src/tools/projects.js';
 import { setRuntimePaths } from '../src/core/paths.js';
 import { bootstrapProjectHome } from '../src/projects/bootstrap.js';
 
@@ -77,6 +78,15 @@ describe('ToolRegistry', () => {
     const active = registry.getActiveTools();
     assert.ok(active.some((t) => t.name === 'read'));
     assert.ok(!active.some((t) => t.name === 'write'));
+  });
+
+  it('registers project bootstrap and member management tools', () => {
+    const tools = createProjectTools({
+      bootstrapFromPrompt: async () => ({ output: 'ok', success: true }),
+      manageMember: async () => ({ output: 'ok', success: true }),
+    });
+    const names = tools.map((tool) => tool.name).sort();
+    assert.deepEqual(names, ['project_bootstrap', 'project_member_manage']);
   });
 });
 

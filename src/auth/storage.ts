@@ -107,7 +107,7 @@ export interface AuthStatus {
 
 /** Env vars to check for each provider. */
 const PROVIDER_ENV_VARS: Record<string, string[]> = {
-  anthropic: ['ANTHROPIC_API_KEY', 'ANTHROPIC_API_KEYS', 'OPENCLAW_LIVE_ANTHROPIC_KEY'],
+  anthropic: ['ANTHROPIC_SETUP_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_API_KEYS', 'OPENCLAW_LIVE_ANTHROPIC_KEY'],
   openai: ['OPENAI_API_KEY'],
   litellm: ['LITELLM_API_KEY'],
 };
@@ -117,7 +117,12 @@ export async function getAuthStatus(provider: string): Promise<AuthStatus> {
   const envVars = PROVIDER_ENV_VARS[provider] ?? [`${provider.toUpperCase()}_API_KEY`];
   for (const envVar of envVars) {
     if (process.env[envVar]) {
-      return { provider, authenticated: true, method: 'api_key', source: 'env' };
+      const token = process.env[envVar]!;
+      const method: AuthMethod =
+        provider === 'anthropic' && (envVar === 'ANTHROPIC_SETUP_TOKEN' || token.includes('sk-ant-oat'))
+          ? 'setup_token'
+          : 'api_key';
+      return { provider, authenticated: true, method, source: 'env' };
     }
   }
 
@@ -187,7 +192,12 @@ export async function resolveAuth(provider: string): Promise<ResolvedAuth | null
   const envVars = PROVIDER_ENV_VARS[provider] ?? [`${provider.toUpperCase()}_API_KEY`];
   for (const envVar of envVars) {
     if (process.env[envVar]) {
-      return { token: process.env[envVar]!, method: 'api_key', source: 'env' };
+      const token = process.env[envVar]!;
+      const method: AuthMethod =
+        provider === 'anthropic' && (envVar === 'ANTHROPIC_SETUP_TOKEN' || token.includes('sk-ant-oat'))
+          ? 'setup_token'
+          : 'api_key';
+      return { token, method, source: 'env' };
     }
   }
 

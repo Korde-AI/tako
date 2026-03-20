@@ -163,6 +163,8 @@ export interface ProvidersConfig {
   overrides?: Record<string, Record<string, unknown>>;
   /** LiteLLM-specific config */
   litellm?: LiteLLMConfig;
+  /** Anthropic-specific config (baseUrl for proxy, apiKey/setupToken override) */
+  anthropic?: { baseUrl?: string; apiKey?: string; setupToken?: string; model?: string };
   /** Cooldown duration in seconds after a provider fails (default: 60) */
   cooldownSeconds?: number;
   /**
@@ -213,6 +215,15 @@ export interface ChannelsConfig {
 export interface DiscordChannelConfig {
   token: string;
   guilds?: string[];
+  authPolicy?: {
+    enabled?: boolean;
+    /** Unbound Discord channel names treated as owner-only "general" rooms. */
+    generalChannels?: string[];
+    /** Additional Discord user ids/usernames allowed in general rooms besides the claimed owner. */
+    extraGeneralUsers?: string[];
+    /** Ignore unbound Discord rooms that are not listed in generalChannels. Default true. */
+    ignoreUnboundChannels?: boolean;
+  };
   /** Thread binding config for ACP/sub-agent spawns. */
   threadBindings?: {
     enabled: boolean;
