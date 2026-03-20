@@ -39,6 +39,7 @@ import type { ThinkingManager } from './thinking.js';
 import type { ReactionManager } from './reactions.js';
 import type { TimezoneManager } from './timezone.js';
 import { toCommandContext } from './execution-context.js';
+import type { ExecutionContext } from './execution-context.js';
 
 /** Sentinel yielded after each intermediate turn so callers can flush text. */
 
@@ -192,6 +193,19 @@ export interface AgentLoopDeps {
   reactionManager?: ReactionManager;
   /** Timezone manager for context injection */
   timezoneManager?: TimezoneManager;
+  /** Shared/peer access override path for privileged tool requests */
+  handleSharedAccessToolAuthorization?: (input: {
+    session: Session;
+    toolCall: ToolCall;
+    roleName: string;
+    userMessage: string;
+    executionContext?: ExecutionContext;
+    channel?: Channel;
+  }) => Promise<{
+    allow: boolean;
+    approvalId?: string;
+    toolResult?: ToolResult;
+  } | null>;
 }
 
 export class AgentLoop {
@@ -900,6 +914,7 @@ export class AgentLoop {
       };
 
       for (const tc of pendingToolCalls) {
+        let approvedSharedAccessId: string | undefined;
         // Check for tool loops before execution
         if (this.deps.toolLoopDetector) {
           const loopWarning = this.deps.toolLoopDetector.recordAndCheck(
@@ -925,39 +940,56 @@ export class AgentLoop {
 
         // Check role-based permissions before execution
         if (role && !isToolAllowed(role, tc.name)) {
-          const deniedResult: ToolResult = {
-            output: `Permission denied: agent role "${roleName}" cannot use tool "${tc.name}"`,
-            success: false,
-          };
+          const override = this.deps.handleSharedAccessToolAuthorization
+            ? await this.deps.handleSharedAccessToolAuthorization({
+                session,
+                toolCall: tc,
+                roleName,
+                userMessage,
+                executionContext,
+                channel: session.metadata?.channelRef as Channel | undefined,
+              })
+            : null;
+          if (override?.allow) {
+            approvedSharedAccessId = override.approvalId;
+          } else {
+            const deniedResult: ToolResult = override?.toolResult ?? {
+              output: `Permission denied: agent role "${roleName}" cannot use tool "${tc.name}"`,
+              success: false,
+            };
 
-        if (hooks) {
-          await hooks.emit('after_tool_call', {
-            event: 'after_tool_call',
-            sessionId: session.id,
-            data: {
-              toolName: tc.name,
-              params: tc.input,
-              result: deniedResult,
-              agentId: this.deps.agentId,
-              principalId: session.metadata?.principalId,
-              principalName: session.metadata?.principalName,
-              projectId: session.metadata?.projectId,
-              projectSlug: session.metadata?.projectSlug,
-              sharedSessionId: session.metadata?.sharedSessionId,
-              participantIds: session.metadata?.participantIds,
-            },
-            timestamp: Date.now(),
-          });
-        }
+            if (hooks) {
+              await hooks.emit('after_tool_call', {
+                event: 'after_tool_call',
+                sessionId: session.id,
+                data: {
+                  toolName: tc.name,
+                  params: tc.input,
+                  result: deniedResult,
+                  agentId: this.deps.agentId,
+                  principalId: session.metadata?.principalId,
+                  principalName: session.metadata?.principalName,
+                  projectId: session.metadata?.projectId,
+                  projectSlug: session.metadata?.projectSlug,
+                  sharedSessionId: session.metadata?.sharedSessionId,
+                  participantIds: session.metadata?.participantIds,
+                  denied: true,
+                  denialType: override?.approvalId ? 'shared_task_approval' : 'role',
+                  peerApprovalId: override?.approvalId,
+                },
+                timestamp: Date.now(),
+              });
+            }
 
-          const toolMsg: ChatMessage = {
-            role: 'tool',
-            content: deniedResult.output,
-            tool_call_id: tc.id,
-          };
-          session.messages.push(toolMsg);
-          messages.push(toolMsg);
-          continue;
+            const toolMsg: ChatMessage = {
+              role: 'tool',
+              content: deniedResult.output,
+              tool_call_id: tc.id,
+            };
+            session.messages.push(toolMsg);
+            messages.push(toolMsg);
+            continue;
+          }
         }
         if (hooks) {
           await hooks.emit('before_tool_call', {
@@ -973,6 +1005,7 @@ export class AgentLoop {
               projectSlug: session.metadata?.projectSlug,
               sharedSessionId: session.metadata?.sharedSessionId,
               participantIds: session.metadata?.participantIds,
+              peerApprovalId: approvedSharedAccessId,
             },
             timestamp: Date.now(),
           });
@@ -1130,6 +1163,7 @@ export class AgentLoop {
               projectSlug: session.metadata?.projectSlug,
               sharedSessionId: session.metadata?.sharedSessionId,
               participantIds: session.metadata?.participantIds,
+              peerApprovalId: approvedSharedAccessId,
             },
             timestamp: Date.now(),
           });

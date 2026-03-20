@@ -112,6 +112,7 @@ import { runService } from './cli/service.js';
 import { runCache } from './cli/cache.js';
 import { runAudit } from './cli/audit.js';
 import { initAudit } from './core/audit.js';
+import { PeerTaskApprovalRegistry, type PeerTaskApproval } from './core/peer-approvals.js';
 import { runAcp } from './cli/acp.js';
 import { runExtensions } from './cli/extensions.js';
 import { AcpxRuntime } from './acp/runtime.js';
@@ -620,6 +621,7 @@ async function runStart(): Promise<void> {
   const projectMemberships = new ProjectMembershipRegistry(runtimePaths.projectsDir);
   const projectBindings = new ProjectBindingRegistry(runtimePaths.projectsDir);
   const sharedSessionRegistry = new SharedSessionRegistry(runtimePaths.sharedSessionsDir);
+  const peerTaskApprovals = new PeerTaskApprovalRegistry(runtimePaths.peerTaskApprovalsFile);
   const trustStore = new TrustStore(runtimePaths.trustFile);
   const networkSharedSessions = new NetworkSharedSessionStore(runtimePaths.networkSessionsFile, runtimePaths.networkEventsFile);
   const capabilityRegistry = new CapabilityRegistry(runtimePaths.capabilitiesFile);
@@ -631,6 +633,7 @@ async function runStart(): Promise<void> {
   await projectMemberships.load();
   await projectBindings.load();
   await sharedSessionRegistry.load();
+  await peerTaskApprovals.load();
   await trustStore.load();
   await networkSharedSessions.load();
   await capabilityRegistry.load();
@@ -2631,6 +2634,228 @@ async function runStart(): Promise<void> {
     if (messageQueueProcessor) await messageQueueProcessor(sessionId, messages);
   });
 
+  function summarizePeerTaskArgs(args: unknown, maxChars = 180): string {
+    const raw = (() => {
+      try {
+        return JSON.stringify(args);
+      } catch {
+        return String(args);
+      }
+    })();
+    if (raw.length <= maxChars) return raw;
+    return raw.slice(0, maxChars - 3) + '...';
+  }
+
+  function buildPeerTaskResumePrompt(approval: PeerTaskApproval): string {
+    const approvedArgs = (() => {
+      try {
+        return JSON.stringify(approval.toolArgs);
+      } catch {
+        return String(approval.toolArgs);
+      }
+    })();
+    return [
+      `[System event] Owner approval granted for request ${approval.approvalId}.`,
+      `Tool: ${approval.toolName}.`,
+      'Resume the previously blocked task now.',
+      `Use the approved input exactly once if still required: ${approvedArgs}.`,
+    ].join(' ');
+  }
+
+  async function resumePeerTaskApproval(approval: PeerTaskApproval): Promise<void> {
+    const session = sessions.get(approval.sessionId);
+    if (!session) {
+      console.warn(`[peer-approval] Session ${approval.sessionId} not found for ${approval.approvalId}`);
+      return;
+    }
+
+    const channelRef = session.metadata?.channelRef as Channel | undefined;
+    const target = approval.channelTarget ?? session.metadata?.channelTarget as string | undefined;
+    if (!channelRef || !target) {
+      console.warn(`[peer-approval] Missing channel for ${approval.approvalId}`);
+      return;
+    }
+    if (activeProcessingSessions.has(session.id)) {
+      console.warn(`[peer-approval] Session ${session.id} already active, skipping auto-resume for ${approval.approvalId}`);
+      return;
+    }
+
+    const activeLoop = getAgentLoop(session.metadata?.agentId as string | undefined);
+    activeProcessingSessions.add(session.id);
+    let response = '';
+    let hadError = false;
+
+    try {
+      activeLoop.setChannel(channelRef);
+      for await (const chunk of activeLoop.run(session, approval.resumePrompt)) {
+        response += chunk;
+      }
+    } catch (err) {
+      hadError = true;
+      response = formatUserFacingAgentError(err);
+      console.error(`[peer-approval] Resume failed for ${approval.approvalId}:`, err instanceof Error ? err.message : err);
+    } finally {
+      activeProcessingSessions.delete(session.id);
+    }
+
+    if (response.trim()) {
+      await channelRef.send({
+        target,
+        content: response.trim(),
+      }).catch((err) => {
+        console.error(`[peer-approval] Send failed for ${approval.approvalId}:`, err instanceof Error ? err.message : err);
+      });
+    }
+
+    audit.log({
+      agentId: approval.agentId,
+      sessionId: approval.sessionId,
+      principalId: approval.requesterPrincipalId,
+      principalName: approval.requesterPrincipalName,
+      projectId: approval.projectId,
+      projectSlug: approval.projectSlug,
+      event: 'agent_comms',
+      action: hadError ? 'peer_task_resume_failed' : 'peer_task_resumed',
+      details: {
+        approvalId: approval.approvalId,
+        toolName: approval.toolName,
+      },
+      success: !hadError,
+    }).catch(() => {});
+
+    sessions.markSessionDirty(session.id);
+  }
+
+  async function handleSharedAccessToolAuthorization(input: {
+    session: Session;
+    toolCall: import('./providers/provider.js').ToolCall;
+    roleName: string;
+    userMessage: string;
+    executionContext?: ExecutionContext;
+    channel?: Channel;
+  }): Promise<{
+    allow: boolean;
+    approvalId?: string;
+    toolResult?: import('./tools/tool.js').ToolResult;
+  } | null> {
+    const accessMode = String(input.executionContext?.metadata?.['agentAccessMode'] ?? '');
+    if (accessMode !== 'shared_readonly' && accessMode !== 'peer_agent_readonly') {
+      return null;
+    }
+
+    const ownerUserIds = Array.isArray(input.executionContext?.metadata?.['ownerUserIds'])
+      ? input.executionContext?.metadata?.['ownerUserIds'] as string[]
+      : [];
+    const ownerPrincipalIds = Array.isArray(input.executionContext?.metadata?.['ownerPrincipalIds'])
+      ? input.executionContext?.metadata?.['ownerPrincipalIds'] as string[]
+      : [];
+
+    const granted = await peerTaskApprovals.consumeApproved(
+      input.session.id,
+      input.executionContext?.agentId ?? input.session.metadata?.agentId as string ?? 'main',
+      input.toolCall.name,
+      input.toolCall.input,
+    );
+    if (granted) {
+      return {
+        allow: true,
+        approvalId: granted.approvalId,
+      };
+    }
+
+    const requesterName = input.executionContext?.principalName
+      ?? input.executionContext?.authorName
+      ?? input.session.metadata?.principalName as string | undefined
+      ?? input.session.metadata?.authorName as string | undefined;
+    const requesterIsBot = input.executionContext?.metadata?.['isBotOrigin'] === true;
+    const { approval, reused } = await peerTaskApprovals.createOrReuse({
+      sessionId: input.session.id,
+      agentId: input.executionContext?.agentId ?? input.session.metadata?.agentId as string ?? 'main',
+      toolName: input.toolCall.name,
+      toolArgs: input.toolCall.input,
+      channelType: input.executionContext?.platform ?? input.session.metadata?.channelType as string | undefined,
+      channelTarget: input.executionContext?.channelTarget ?? input.session.metadata?.channelTarget as string | undefined,
+      projectId: input.executionContext?.projectId,
+      projectSlug: input.executionContext?.projectSlug,
+      requesterPrincipalId: input.executionContext?.principalId,
+      requesterPrincipalName: input.executionContext?.principalName,
+      requesterAuthorId: input.executionContext?.authorId,
+      requesterAuthorName: input.executionContext?.authorName,
+      requesterIsBot,
+      ownerUserIds,
+      ownerPrincipalIds,
+      originalUserMessage: input.userMessage,
+      resumePrompt: '',
+    });
+    if (!approval.resumePrompt) {
+      approval.resumePrompt = buildPeerTaskResumePrompt(approval);
+      await peerTaskApprovals.save();
+    }
+
+    if (!reused) {
+      audit.log({
+        agentId: approval.agentId,
+        sessionId: approval.sessionId,
+        principalId: approval.requesterPrincipalId,
+        principalName: approval.requesterPrincipalName,
+        projectId: approval.projectId,
+        projectSlug: approval.projectSlug,
+        event: 'agent_comms',
+        action: 'peer_task_approval_request',
+        details: {
+          approvalId: approval.approvalId,
+          toolName: approval.toolName,
+          requesterIsBot,
+        },
+        success: true,
+      }).catch(() => {});
+    }
+
+    if (!reused && input.channel?.id === 'discord' && typeof approval.channelTarget === 'string' && ownerUserIds.length > 0) {
+      const discordChannelRef = input.channel as DiscordChannel & {
+        sendPeerTaskApprovalRequest?: (request: {
+          channelId: string;
+          approvalId: string;
+          agentId: string;
+          requesterName?: string;
+          requesterIsBot?: boolean;
+          toolName: string;
+          toolArgsPreview?: string;
+          ownerMentions?: string[];
+          projectSlug?: string;
+        }) => Promise<string>;
+      };
+      if (typeof discordChannelRef.sendPeerTaskApprovalRequest === 'function') {
+        await discordChannelRef.sendPeerTaskApprovalRequest({
+          channelId: approval.channelTarget,
+          approvalId: approval.approvalId,
+          agentId: approval.agentId,
+          requesterName,
+          requesterIsBot,
+          toolName: approval.toolName,
+          toolArgsPreview: summarizePeerTaskArgs(approval.toolArgs),
+          ownerMentions: ownerUserIds.map((id) => `<@${id}>`),
+          projectSlug: approval.projectSlug,
+        }).catch((err) => {
+          console.error('[peer-approval] Failed to send approval card:', err instanceof Error ? err.message : err);
+        });
+      }
+    }
+
+    const ownerMentions = ownerUserIds.map((id) => `<@${id}>`);
+    return {
+      allow: false,
+      approvalId: approval.approvalId,
+      toolResult: {
+        output: reused
+          ? `Owner approval is still pending for tool "${input.toolCall.name}". Approval request ${approval.approvalId} is already open${ownerMentions.length > 0 ? ` for ${ownerMentions.join(', ')}` : ''}.`
+          : `Owner approval is required before using tool "${input.toolCall.name}" in ${accessMode}. I opened approval request ${approval.approvalId}${ownerMentions.length > 0 ? ` for ${ownerMentions.join(', ')}` : ''}.`,
+        success: false,
+        error: 'approval_required',
+      },
+    };
+  }
+
   // Typing indicators + reaction feedback
   const { TypingManager } = await import('./core/typing.js');
   const { ReactionManager } = await import('./core/reactions.js');
@@ -2649,7 +2874,7 @@ async function runStart(): Promise<void> {
 
   // Agent loop with skill loader for dynamic injection
   const agentLoop = new AgentLoop(
-    { provider: failoverProvider, toolRegistry, promptBuilder, contextManager, hooks, skillLoader, model: config.providers.primary, workspaceRoot: config.memory.workspace, retryQueue, typingManager, reactionManager, streamingConfig: config.agent.streaming, compactor: sessionCompactor },
+    { provider: failoverProvider, toolRegistry, promptBuilder, contextManager, hooks, skillLoader, model: config.providers.primary, workspaceRoot: config.memory.workspace, retryQueue, typingManager, reactionManager, streamingConfig: config.agent.streaming, compactor: sessionCompactor, handleSharedAccessToolAuthorization },
     {
       timeout: config.agent.timeout,
       ...(config.agent.maxOutputChars != null && { maxOutputChars: config.agent.maxOutputChars }),
@@ -2717,6 +2942,7 @@ async function runStart(): Promise<void> {
         reactionManager,
         streamingConfig: config.agent.streaming,
         compactor: sessionCompactor,
+        handleSharedAccessToolAuthorization,
       },
       {
         timeout: config.agent.timeout,
@@ -3829,6 +4055,9 @@ async function runStart(): Promise<void> {
     const params = event.data.params && typeof event.data.params === 'object'
       ? event.data.params as Record<string, unknown>
       : {};
+    const peerApprovalId = typeof event.data.peerApprovalId === 'string'
+      ? event.data.peerApprovalId
+      : undefined;
     audit.log({
       agentId: String(event.data.agentId ?? 'main'),
       sessionId: String(event.sessionId ?? 'unknown'),
@@ -3843,6 +4072,26 @@ async function runStart(): Promise<void> {
       details: params,
       success: Boolean(result.success),
     }).catch(() => {});
+    if (peerApprovalId) {
+      audit.log({
+        agentId: String(event.data.agentId ?? 'main'),
+        sessionId: String(event.sessionId ?? 'unknown'),
+        principalId: event.data.principalId as string | undefined,
+        principalName: event.data.principalName as string | undefined,
+        projectId: event.data.projectId as string | undefined,
+        projectSlug: event.data.projectSlug as string | undefined,
+        sharedSessionId: event.data.sharedSessionId as string | undefined,
+        participantIds: event.data.participantIds as string[] | undefined,
+        event: 'agent_comms',
+        action: 'peer_task_execute_approved',
+        details: {
+          approvalId: peerApprovalId,
+          toolName: String(event.data.toolName ?? 'unknown'),
+          params,
+        },
+        success: Boolean(result.success),
+      }).catch(() => {});
+    }
     if (event.data.denied) {
       audit.log({
         agentId: String(event.data.agentId ?? 'main'),
@@ -3861,6 +4110,7 @@ async function runStart(): Promise<void> {
           attemptedPath: event.data.attemptedPath,
           params,
           error: result.error,
+          approvalId: peerApprovalId,
         },
         success: false,
       }).catch(() => {});
@@ -4129,6 +4379,69 @@ async function runStart(): Promise<void> {
           await interaction.reply({ content: `Resolved ${resolved.artifactName}: ${resolved.status}`, flags: 64 }).catch(() => {});
         });
         await notifyBoundDiscordChannels(projectId, `[patch ${resolved.status}] ${resolved.artifactName} (${resolved.approvalId}) by ${principal.displayName}`);
+        return true;
+      }
+      if (interaction.customId.startsWith('peerapprove:') || interaction.customId.startsWith('peerdeny:')) {
+        const [action, approvalId] = interaction.customId.split(':');
+        if (!approvalId) {
+          await interaction.reply({ content: 'Malformed peer approval action.', flags: 64 }).catch(() => {});
+          return true;
+        }
+        const principal = await principalRegistry.getOrCreateHuman({
+          displayName: interaction.user.displayName || interaction.user.username,
+          platform: 'discord',
+          platformUserId: interaction.user.id,
+        });
+        const existing = peerTaskApprovals.get(approvalId);
+        if (!existing) {
+          await interaction.reply({ content: `Approval not found: ${approvalId}`, flags: 64 }).catch(() => {});
+          return true;
+        }
+        const ownerAllowed = existing.ownerUserIds.includes(interaction.user.id)
+          || (principal.principalId ? existing.ownerPrincipalIds.includes(principal.principalId) : false);
+        if (!ownerAllowed) {
+          await interaction.reply({ content: 'Only the owning human can approve this task.', flags: 64 }).catch(() => {});
+          return true;
+        }
+        if (existing.status !== 'pending') {
+          await interaction.reply({ content: `Approval ${approvalId} is already ${existing.status}.`, flags: 64 }).catch(() => {});
+          return true;
+        }
+        const resolved = await peerTaskApprovals.resolve(
+          approvalId,
+          action === 'peerapprove' ? 'approved' : 'denied',
+          {
+            reviewedByPrincipalId: principal.principalId,
+            reviewedByUserId: interaction.user.id,
+            decisionReason: `Resolved in Discord by ${principal.displayName}`,
+          },
+        );
+        await interaction.update({
+          content: `${interaction.message.content}\n\nResolved: **${resolved.status}** by ${principal.displayName}`,
+          components: [],
+        }).catch(async () => {
+          await interaction.reply({ content: `Resolved peer task ${resolved.approvalId}: ${resolved.status}`, flags: 64 }).catch(() => {});
+        });
+        audit.log({
+          agentId: resolved.agentId,
+          sessionId: resolved.sessionId,
+          principalId: resolved.requesterPrincipalId,
+          principalName: resolved.requesterPrincipalName,
+          projectId: resolved.projectId,
+          projectSlug: resolved.projectSlug,
+          event: 'agent_comms',
+          action: resolved.status === 'approved' ? 'peer_task_approval_approved' : 'peer_task_approval_denied',
+          details: {
+            approvalId: resolved.approvalId,
+            toolName: resolved.toolName,
+            reviewedByPrincipalId: principal.principalId,
+            reviewedByUserId: interaction.user.id,
+          },
+          success: resolved.status === 'approved',
+        }).catch(() => {});
+        if (resolved.status === 'approved') {
+          await resumePeerTaskApproval(resolved);
+        }
         return true;
       }
       return false;

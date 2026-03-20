@@ -98,7 +98,7 @@ export class CommandRegistry {
     if (!cmd) return null;
 
     const agentAccessMode = ctx.executionContext?.metadata?.['agentAccessMode'];
-    if (agentAccessMode === 'shared_readonly' && !SHARED_READONLY_COMMANDS.has(name)) {
+    if ((agentAccessMode === 'shared_readonly' || agentAccessMode === 'peer_agent_readonly') && !SHARED_READONLY_COMMANDS.has(name)) {
       return 'This is another person\'s agent. In shared-readonly mode you can inspect shared project or channel information, but you cannot execute commands or mutations here.';
     }
 

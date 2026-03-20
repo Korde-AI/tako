@@ -41,6 +41,7 @@ export interface TakoPaths {
   threadBindingsFile: string;
   restartNoteFile: string;
   introducedChannelsFile: string;
+  peerTaskApprovalsFile: string;
 }
 
 let currentMode: NodeMode = parseNodeMode(process.env['TAKO_MODE']);
@@ -103,6 +104,7 @@ export function createTakoPaths(home: string): TakoPaths {
     threadBindingsFile: join(home, 'runtime', 'thread-bindings.json'),
     restartNoteFile: join(home, 'runtime', 'restart-note.json'),
     introducedChannelsFile: join(home, 'runtime', 'introduced-channels.json'),
+    peerTaskApprovalsFile: join(home, 'runtime', 'peer-task-approvals.json'),
   };
 }
 
