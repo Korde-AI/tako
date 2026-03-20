@@ -241,13 +241,17 @@ export class PromptBuilder {
     if (this.executionContext?.projectId && this.executionContext.principalId) {
       const paths = getRuntimePaths();
       const chunks: string[] = [];
+      const sharedOnly = this.executionContext.metadata?.['sharedMemoryOnly'] === true
+        || this.executionContext.metadata?.['agentAccessMode'] === 'shared_readonly';
       const shared = await this.loadMemoryFile(getProjectSharedMemoryDir(paths, this.executionContext.projectId), 'project-shared');
       if (shared) chunks.push(shared);
-      const privateMemory = await this.loadMemoryFile(
-        getProjectPrivateMemoryDir(paths, this.executionContext.projectId, this.executionContext.principalId),
-        'project-private',
-      );
-      if (privateMemory) chunks.push(privateMemory);
+      if (!sharedOnly) {
+        const privateMemory = await this.loadMemoryFile(
+          getProjectPrivateMemoryDir(paths, this.executionContext.projectId, this.executionContext.principalId),
+          'project-private',
+        );
+        if (privateMemory) chunks.push(privateMemory);
+      }
       return chunks.join('\n\n---\n\n');
     }
 
@@ -477,6 +481,57 @@ export class PromptBuilder {
         `- **Date:** ${dateStr}`,
         `- **Time:** ${timeStr}`,
         `- **Timezone:** ${tz}`,
+      );
+    }
+
+    const ctx = this.executionContext;
+    if (ctx) {
+      lines.push(...[
+        '',
+        '# Current Speaker',
+        '',
+        `- **Author Name:** ${ctx.authorName ?? 'unknown'}`,
+        `- **Author ID:** ${ctx.authorId ?? 'unknown'}`,
+        `- **Principal Name:** ${ctx.principalName ?? ctx.authorName ?? 'unknown'}`,
+        `- **Principal ID:** ${ctx.principalId ?? 'unknown'}`,
+        ctx.platform ? `- **Platform:** ${ctx.platform}` : null,
+        ctx.platformUserId ? `- **Platform User ID:** ${ctx.platformUserId}` : null,
+        ctx.agentId ? `- **Target Agent:** ${ctx.agentId}` : null,
+        ctx.projectSlug ? `- **Current Project:** ${ctx.projectSlug}` : null,
+        ctx.projectRole ? `- **Project Role:** ${ctx.projectRole}` : null,
+        '',
+        '- The current speaker is the principal above.',
+        '- Do not infer the current speaker from room members, participants, or earlier messages.',
+        '- For questions like "who am I" or "what is my role", answer from the current speaker identity above unless a tool call is required.',
+      ].filter((line): line is string => line !== null));
+    }
+
+    const agentAccessMode = this.executionContext?.metadata?.['agentAccessMode'];
+    if (agentAccessMode === 'shared_readonly') {
+      lines.push(
+        '',
+        '# Access Mode',
+        '',
+        '- **Mode:** shared-readonly',
+        '- You are being accessed through another person\'s agent.',
+        '- Only use shared, non-sensitive project/channel information.',
+        '- Do not attempt mutations, privileged actions, or private-memory access.',
+      );
+    } else if (agentAccessMode === 'peer_agent_readonly') {
+      const ownerUserIds = Array.isArray(this.executionContext?.metadata?.['ownerUserIds'])
+        ? this.executionContext?.metadata?.['ownerUserIds'] as string[]
+        : [];
+      lines.push(
+        '',
+        '# Access Mode',
+        '',
+        '- **Mode:** peer-agent-readonly',
+        '- The current speaker is another agent/bot, not the human owner.',
+        '- You may exchange shared project information and coordinate tasks.',
+        '- Do not execute host mutations, filesystem changes, or privileged actions on behalf of another agent.',
+        ownerUserIds.length > 0
+          ? `- If privileged action is needed, ask the owner for approval and @mention them using: ${ownerUserIds.map((id) => `<@${id}>`).join(', ')}`
+          : '- If privileged action is needed, ask the human owner for approval before proceeding.',
       );
     }
 

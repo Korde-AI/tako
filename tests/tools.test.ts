@@ -15,6 +15,7 @@ import { contentSearchTool } from '../src/tools/search.js';
 import type { ToolContext } from '../src/tools/tool.js';
 import { createMemoryTools } from '../src/tools/memory.js';
 import { createProjectTools } from '../src/tools/projects.js';
+import { createDiscordRoomTools } from '../src/tools/discord-room.js';
 import { createMessageTools } from '../src/tools/message.js';
 import { extractPptxSlideTextFromXml, officeTools } from '../src/tools/office.js';
 import { setRuntimePaths } from '../src/core/paths.js';
@@ -88,14 +89,46 @@ describe('ToolRegistry', () => {
       manageMember: async () => ({ output: 'ok', success: true }),
       syncProject: async () => ({ output: 'ok', success: true }),
       closeProject: async () => ({ output: 'ok', success: true }),
+      manageNetwork: async () => ({ output: 'ok', success: true }),
     });
     const names = tools.map((tool) => tool.name).sort();
-    assert.deepEqual(names, ['project_bootstrap', 'project_close', 'project_member_manage', 'project_sync']);
+    assert.deepEqual(names, ['project_bootstrap', 'project_close', 'project_member_manage', 'project_network_manage', 'project_sync']);
+  });
+
+  it('parses natural invite input into a human-friendly network target hint', async () => {
+    let seen: unknown = null;
+    const tools = createProjectTools({
+      bootstrapFromPrompt: async () => ({ output: 'ok', success: true }),
+      manageMember: async () => ({ output: 'ok', success: true }),
+      syncProject: async () => ({ output: 'ok', success: true }),
+      closeProject: async () => ({ output: 'ok', success: true }),
+      manageNetwork: async (input) => {
+        seen = input;
+        return { output: 'ok', success: true };
+      },
+    });
+    const tool = tools.find((candidate) => candidate.name === 'project_network_manage');
+    assert.ok(tool);
+
+    await tool!.execute({ input: 'invite jiaxinassistant into this project' }, makeCtx('/tmp'));
+    assert.deepEqual(seen, {
+      action: 'invite_create',
+      targetHint: 'jiaxinassistant',
+      role: 'contribute',
+    });
   });
 
   it('registers office extraction tool', () => {
     const names = officeTools.map((tool) => tool.name);
     assert.ok(names.includes('extract_office_text'));
+  });
+
+  it('registers Discord room access tool', () => {
+    const tools = createDiscordRoomTools({
+      manageAccess: async () => ({ output: 'ok', success: true }),
+      inspectRoom: async () => ({ output: 'ok', success: true }),
+    });
+    assert.deepEqual(tools.map((tool) => tool.name), ['discord_room_access_manage', 'discord_room_inspect']);
   });
 });
 

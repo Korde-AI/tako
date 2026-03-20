@@ -875,9 +875,13 @@ export class AgentLoop {
       if (pendingToolCalls.length === 0) break;
 
       // Execute tool calls
-      const roleName = this.deps.agentRole ?? 'admin';
-      const role = getRole(roleName);
       const executionContext = session.metadata?.executionContext as import('./execution-context.js').ExecutionContext | undefined;
+      const roleName = (
+        typeof executionContext?.metadata?.['effectiveAgentRole'] === 'string'
+          ? String(executionContext.metadata['effectiveAgentRole'])
+          : this.deps.agentRole
+      ) ?? 'admin';
+      const role = getRole(roleName);
       const allowedToolRoot = executionContext?.allowedToolRoot
         ?? executionContext?.projectRoot
         ?? this.deps.workspaceRoot

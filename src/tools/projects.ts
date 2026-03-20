@@ -25,11 +25,22 @@ export interface ProjectCloseRequest {
   projectSlug?: string;
 }
 
+export interface ProjectNetworkManageRequest {
+  action: 'invite_create' | 'invite_list' | 'invite_accept';
+  projectSlug?: string;
+  targetNodeId?: string;
+  targetHint?: string;
+  role?: 'read' | 'contribute' | 'write' | 'admin';
+  ceiling?: 'read' | 'contribute' | 'write' | 'admin';
+  inviteId?: string;
+}
+
 export interface ProjectToolDeps {
   bootstrapFromPrompt: (input: ProjectBootstrapRequest, ctx: ToolContext) => Promise<ToolResult>;
   manageMember: (input: ProjectMemberManageRequest, ctx: ToolContext) => Promise<ToolResult>;
   syncProject: (input: ProjectSyncRequest, ctx: ToolContext) => Promise<ToolResult>;
   closeProject: (input: ProjectCloseRequest, ctx: ToolContext) => Promise<ToolResult>;
+  manageNetwork: (input: ProjectNetworkManageRequest, ctx: ToolContext) => Promise<ToolResult>;
 }
 
 export function createProjectTools(deps: ProjectToolDeps): Tool[] {
@@ -169,5 +180,73 @@ export function createProjectTools(deps: ProjectToolDeps): Tool[] {
     },
   };
 
-  return [projectBootstrap, projectMemberManage, projectSync, projectClose];
+  const projectNetworkManage: Tool = {
+    name: 'project_network_manage',
+    description: 'Manage project/node collaboration invites. Use this to create a project invite for another agent or node, list available invites on this node, or accept an invite so this node joins the project and provisions its local project workspace/worktree. Prefer human-friendly identities in `targetHint` such as a bot name, @mention, or node name instead of exposing raw node IDs to users.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['invite_create', 'invite_list', 'invite_accept'],
+          description: 'Create, list, or accept project collaboration invites.',
+        },
+        projectSlug: {
+          type: 'string',
+          description: 'Project slug override. Omit to use the current project when creating an invite.',
+        },
+        targetNodeId: {
+          type: 'string',
+          description: 'Optional remote node ID to invite. Usually omit this and use targetHint instead.',
+        },
+        targetHint: {
+          type: 'string',
+          description: 'Human-friendly target identity such as a Discord bot name, @mention, known node name, or agent name.',
+        },
+        role: {
+          type: 'string',
+          enum: ['read', 'contribute', 'write', 'admin'],
+          description: 'Offered project role for the remote node.',
+        },
+        ceiling: {
+          type: 'string',
+          enum: ['read', 'contribute', 'write', 'admin'],
+          description: 'Authority ceiling for the trust relationship.',
+        },
+        inviteId: {
+          type: 'string',
+          description: 'Invite ID to accept.',
+        },
+      },
+      required: ['action'],
+    },
+    async execute(params: unknown, ctx: ToolContext): Promise<ToolResult> {
+      const raw = params as { input?: string };
+      if (raw?.input && typeof raw.input === 'string') {
+        const input = raw.input.trim();
+        const lower = input.toLowerCase();
+        if (!input || lower.includes('list invite')) {
+          return deps.manageNetwork({ action: 'invite_list' }, ctx);
+        }
+        if (lower.startsWith('accept ')) {
+          return deps.manageNetwork({ action: 'invite_accept', inviteId: input.slice('accept '.length).trim() }, ctx);
+        }
+        if (lower.includes('accept') && (lower.includes('latest invite') || lower.includes('this channel') || lower.includes('here'))) {
+          return deps.manageNetwork({ action: 'invite_accept' }, ctx);
+        }
+        if (lower.includes('invite')) {
+          const targetHint = input
+            .replace(/^(create\s+)?(a\s+)?(project\s+)?invite\s+(for\s+)?/i, '')
+            .replace(/^(invite)\s+/i, '')
+            .replace(/\s+(to\s+join|into|to)\s+(this\s+)?project.*$/i, '')
+            .replace(/\s+as\s+(read|contribute|write|admin).*$/i, '')
+            .trim();
+          return deps.manageNetwork({ action: 'invite_create', targetHint, role: 'contribute' }, ctx);
+        }
+      }
+      return deps.manageNetwork(params as ProjectNetworkManageRequest, ctx);
+    },
+  };
+
+  return [projectBootstrap, projectMemberManage, projectSync, projectClose, projectNetworkManage];
 }

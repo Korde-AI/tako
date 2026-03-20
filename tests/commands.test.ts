@@ -10,6 +10,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { parseCommand } from '../src/commands/parser.js';
+import { CommandRegistry } from '../src/commands/registry.js';
 import { sanitizeCommandName, buildSkillCommands, type SkillCommandSpec } from '../src/commands/skill-commands.js';
 import { dispatchSkillCommand, type DispatchContext } from '../src/commands/dispatch.js';
 import type { LoadedSkill, SkillManifest } from '../src/skills/types.js';
@@ -245,5 +246,48 @@ describe('dispatchSkillCommand', () => {
       dispatchCtx,
     );
     assert.equal(result.kind, 'not-found');
+  });
+});
+
+describe('CommandRegistry shared readonly mode', () => {
+  function makeRegistry(): CommandRegistry {
+    return new CommandRegistry({
+      getModel: () => 'anthropic/test',
+      setModel: () => {},
+      listAgents: () => [{ id: 'main' }],
+      compactSession: async () => {},
+      estimateTokens: () => 0,
+      startTime: Date.now(),
+      getToolCount: () => 0,
+      getSkillCount: () => 0,
+    });
+  }
+
+  function makeCtx() {
+    return {
+      channelId: 'discord:123',
+      authorId: 'u1',
+      authorName: 'User',
+      session: { id: 's1', messages: [], metadata: {} } as any,
+      agentId: 'main',
+      executionContext: {
+        metadata: {
+          agentAccessMode: 'shared_readonly',
+        },
+      } as any,
+    };
+  }
+
+  it('allows safe inspection commands in shared readonly mode', async () => {
+    const registry = makeRegistry();
+    const result = await registry.handle('/status', makeCtx() as any);
+    assert.ok(result);
+    assert.match(result!, /Tako Status/);
+  });
+
+  it('blocks mutating commands in shared readonly mode', async () => {
+    const registry = makeRegistry();
+    const result = await registry.handle('/new', makeCtx() as any);
+    assert.match(result ?? '', /shared-readonly mode/i);
   });
 });

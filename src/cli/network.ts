@@ -1,4 +1,6 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { resolveConfig } from '../config/resolve.js';
 import { initAudit } from '../core/audit.js';
 import { readNodeIdentity } from '../core/node-identity.js';
@@ -9,6 +11,9 @@ import { ProjectMembershipRegistry } from '../projects/memberships.js';
 import { requireProjectRole } from '../projects/access.js';
 import { ProjectRegistry } from '../projects/registry.js';
 import type { ProjectRole } from '../projects/types.js';
+import { bootstrapProjectHome } from '../projects/bootstrap.js';
+import { defaultProjectWorktreeRoot, resolveProjectRoot } from '../projects/root.js';
+import { ProjectWorktreeRegistry } from '../projects/worktrees.js';
 import { compareAuthorityRoles, isRoleWithinAuthorityCeiling, isValidAuthorityCeiling } from '../network/authority.js';
 import { InviteStore, type ProjectInvite } from '../network/invites.js';
 import { EdgeHubClient } from '../network/edge-client.js';
@@ -82,6 +87,113 @@ async function logInviteEvent(
     details,
     success,
   });
+}
+
+async function ensureAcceptedProjectWorkspace(input: {
+  invite: ProjectInvite;
+  projects: ProjectRegistry;
+}): Promise<{
+  projectId: string;
+  projectRoot: string;
+  worktreeRoot: string;
+}> {
+  const paths = getRuntimePaths();
+  const identity = await readNodeIdentity();
+  if (!identity) throw new Error('Node identity not initialized');
+
+  const imported = await input.projects.importProject({
+    projectId: input.invite.projectId,
+    slug: input.invite.projectSlug,
+    displayName: input.invite.projectSlug,
+    ownerPrincipalId: input.invite.issuedByPrincipalId,
+    status: 'active',
+    collaboration: {
+      mode: 'collaborative',
+      announceJoins: true,
+      autoArtifactSync: true,
+    },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    metadata: {
+      importedFromInviteId: input.invite.inviteId,
+      importedFromNodeId: input.invite.hostNodeId,
+      importedFromNodeName: input.invite.hostNodeName,
+      acceptedRole: input.invite.offeredRole,
+    },
+  });
+
+  await bootstrapProjectHome(paths.projectsDir, imported);
+  const projectRoot = resolveProjectRoot(paths, imported);
+  const worktreeRoot = defaultProjectWorktreeRoot(paths, imported.projectId, identity.nodeId);
+  const worktrees = new ProjectWorktreeRegistry(join(paths.projectsDir, imported.projectId, 'worktrees'), imported.projectId);
+  await worktrees.load();
+  await worktrees.register({
+    nodeId: identity.nodeId,
+    root: worktreeRoot,
+    label: 'network-joined',
+    metadata: {
+      source: 'invite_accept',
+      inviteId: input.invite.inviteId,
+      hostNodeId: input.invite.hostNodeId,
+    },
+  });
+
+  await mkdir(projectRoot, { recursive: true });
+  const projectDocPath = join(projectRoot, 'PROJECT.md');
+  const statusPath = join(projectRoot, 'STATUS.md');
+  const noticePath = join(projectRoot, 'NOTICE.md');
+  if (!existsSync(projectDocPath)) {
+    await writeFile(projectDocPath, [
+      `# ${imported.displayName}`,
+      '',
+      `- Slug: \`${imported.slug}\``,
+      `- Project ID: \`${imported.projectId}\``,
+      `- Imported from node: \`${input.invite.hostNodeName ?? input.invite.hostNodeId}\``,
+      `- Role on this node: \`${input.invite.offeredRole}\``,
+      '',
+      '## Local Node Workspace',
+      `- Workspace root: \`${projectRoot}\``,
+      `- Worktree root: \`${worktreeRoot}\``,
+      '',
+      'This local project mirror was provisioned from a network invite so the agent has a working project space on this host.',
+      '',
+    ].join('\n'), 'utf-8');
+  }
+  if (!existsSync(statusPath)) {
+    await writeFile(statusPath, [
+      '# STATUS',
+      '',
+      '## Current Goal',
+      `- Sync shared project context from ${input.invite.hostNodeName ?? input.invite.hostNodeId}`,
+      '',
+      '## In Progress',
+      '- Local workspace bootstrapped',
+      '- Local worktree registered',
+      '',
+      '## Next Actions',
+      '- Pull or receive shared project artifacts',
+      '- Review PROJECT.md and shared coordination updates',
+      '',
+    ].join('\n'), 'utf-8');
+  }
+  if (!existsSync(noticePath)) {
+    await writeFile(noticePath, [
+      '# NOTICE',
+      '',
+      `This project was joined through network invite \`${input.invite.inviteId}\`.`,
+      `Host node: \`${input.invite.hostNodeName ?? input.invite.hostNodeId}\``,
+      `Granted role: \`${input.invite.offeredRole}\``,
+      '',
+      'Shared project information should be synchronized into this local host as collaboration proceeds.',
+      '',
+    ].join('\n'), 'utf-8');
+  }
+
+  return {
+    projectId: imported.projectId,
+    projectRoot,
+    worktreeRoot,
+  };
 }
 
 export async function runNetwork(args: string[]): Promise<void> {
@@ -590,8 +702,20 @@ async function runInvite(args: string[]): Promise<void> {
       }
       const trust = await stores.trusts.markTrusted(invite.hostNodeId, effectiveCeiling);
       const accepted = await stores.invites.markAccepted(invite.inviteId);
-      await logInviteEvent('invite_accept', true, { inviteId, hostNodeId: invite.hostNodeId, authorityCeiling: effectiveCeiling, trustId: trust?.trustId });
-      outputJsonAware(args, { invite: accepted, trust });
+      const localProject = await ensureAcceptedProjectWorkspace({
+        invite,
+        projects: stores.projects,
+      });
+      await logInviteEvent('invite_accept', true, {
+        inviteId,
+        hostNodeId: invite.hostNodeId,
+        authorityCeiling: effectiveCeiling,
+        trustId: trust?.trustId,
+        localProjectId: localProject.projectId,
+        projectRoot: localProject.projectRoot,
+        worktreeRoot: localProject.worktreeRoot,
+      });
+      outputJsonAware(args, { invite: accepted, trust, localProject });
       return;
     }
     case 'reject': {

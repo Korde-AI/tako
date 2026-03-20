@@ -85,6 +85,7 @@ import { resolveAgentForChannel } from './agents/config.js';
 import { SubAgentOrchestrator } from './agents/subagent.js';
 import { createAgentTools } from './tools/agent-tools.js';
 import { createMessageTools } from './tools/message.js';
+import { createDiscordRoomTools, type DiscordRoomAccessRequest, type DiscordRoomInspectRequest } from './tools/discord-room.js';
 import { ThreadBindingManager } from './core/thread-bindings.js';
 import type { Channel, InboundMessage } from './channels/channel.js';
 import { CommandRegistry } from './commands/registry.js';
@@ -122,7 +123,7 @@ import { CacheManager } from './cache/manager.js';
 import { setFsCacheManager } from './tools/fs.js';
 import { setExecCacheManager } from './tools/exec.js';
 import { setImageProvider } from './tools/image.js';
-import { createProjectTools, type ProjectBootstrapRequest, type ProjectMemberManageRequest, type ProjectSyncRequest, type ProjectCloseRequest } from './tools/projects.js';
+import { createProjectTools, type ProjectBootstrapRequest, type ProjectMemberManageRequest, type ProjectSyncRequest, type ProjectCloseRequest, type ProjectNetworkManageRequest } from './tools/projects.js';
 import { runSymphony } from './cli/symphony.js';
 import { ExtensionRegistry } from './skills/extension-registry.js';
 import { loadExtension, getSkillsWithExtension } from './skills/extension-loader.js';
@@ -168,6 +169,14 @@ import {
   syncAllProjectsToHub,
 } from './network/sync.js';
 import { TrustStore } from './network/trust.js';
+import { InviteStore, type ProjectInvite } from './network/invites.js';
+import {
+  matchesNodeHint,
+  normalizeNodeHint,
+  renderProjectInviteRelay,
+  selectLatestMatchingRelayInvite,
+} from './network/discord-relay.js';
+import { compareAuthorityRoles, isRoleWithinAuthorityCeiling, isValidAuthorityCeiling } from './network/authority.js';
 import { NetworkSharedSessionStore, type NetworkSessionEvent } from './network/shared-sessions.js';
 import { pollNetworkSessionEvents, sendNetworkSessionEvent } from './network/session-sync.js';
 import { CapabilityRegistry } from './network/capabilities.js';
@@ -750,6 +759,46 @@ async function runStart(): Promise<void> {
     }
   };
 
+  const formatProjectWelcomeNotice = (input: {
+    mention?: string;
+    displayName: string;
+    projectName: string;
+    projectSlug: string;
+    collaborative: boolean;
+    summaryLine: string;
+  }): string => {
+    return [
+      '🎉 **New Collaborator Joined**',
+      `${input.mention ?? input.displayName} is now part of **${input.projectName}** \`(${input.projectSlug})\`.`,
+      input.collaborative ? '🤝 Collaboration mode is now active.' : null,
+      `🧭 Sync: ${input.summaryLine}`,
+      '📘 Read `PROJECT.md` and `STATUS.md`, then share your current goal, progress, or blockers here.',
+    ].filter(Boolean).join('\n');
+  };
+
+  const formatCoordinationNotice = (input: {
+    kind: 'progress' | 'rebuttal';
+    who: string;
+    summary: string;
+  }): string => {
+    if (input.kind === 'progress') {
+      return `📈 **Progress Update**\n${input.who}: ${input.summary}`;
+    }
+    return `⚠️ **Rebuttal / Risk Raised**\n${input.who}: ${input.summary}\nPlease review, respond, and align the next step.`;
+  };
+
+  const formatSharedSessionJoinNotice = (input: {
+    displayName: string;
+    projectSlug: string;
+    snapshotSummary?: string;
+  }): string => {
+    return [
+      '🤝 **Participant Joined**',
+      `${input.displayName} joined **${input.projectSlug}**.`,
+      input.snapshotSummary ? `🧭 ${input.snapshotSummary}` : null,
+    ].filter(Boolean).join('\n');
+  };
+
   const notifyPatchApprovalReview = async (input: {
     projectId: string;
     approvalId: string;
@@ -782,6 +831,22 @@ async function runStart(): Promise<void> {
         conflictSummary: input.conflictSummary,
       }).catch(() => {});
     }
+  };
+
+  const peerAgentLoopWindow = new Map<string, number[]>();
+  const shouldThrottlePeerAgentMessage = (input: {
+    targetAgentId: string;
+    authorId: string;
+    channelId: string;
+    isBot: boolean;
+  }): boolean => {
+    if (!input.isBot) return false;
+    const key = `${input.targetAgentId}:${input.channelId}:${input.authorId}`;
+    const now = Date.now();
+    const recent = (peerAgentLoopWindow.get(key) ?? []).filter((ts) => now - ts < 90_000);
+    recent.push(now);
+    peerAgentLoopWindow.set(key, recent);
+    return recent.length > 4;
   };
 
   const getNodeIdentity = () => {
@@ -863,6 +928,7 @@ async function runStart(): Promise<void> {
     project: Project;
     principalId: string;
     principalName?: string;
+    platformUserId?: string;
     platform: 'discord' | 'telegram' | 'cli';
     addedBy: string;
   }): Promise<boolean> => {
@@ -876,20 +942,24 @@ async function runStart(): Promise<void> {
       addedBy: input.addedBy,
     });
     const updatedProject = await activateCollaborativeProject(input.project.projectId, `member_auto_join:${input.principalId}`);
-    await buildProjectBackground(input.project.projectId, `member_auto_join:${input.principalId}`);
+    const background = await buildProjectBackground(input.project.projectId, `member_auto_join:${input.principalId}`);
     if (hubClient && nodeIdentity) {
       await syncProjectToHub(hubClient, nodeIdentity, updatedProject ?? input.project, projectMemberships).catch(() => {});
       await syncProjectMembershipsToHub(hubClient, nodeIdentity, input.project.projectId, projectMemberships).catch(() => {});
     }
     const who = input.principalName ?? input.principalId;
+    const mention = input.platformUserId ? `<@${input.platformUserId}>` : who;
+    const summaryLine = background?.summary.split('\n')[0] ?? `Project ${input.project.displayName} (${input.project.slug})`;
     await notifyBoundDiscordChannels(
       input.project.projectId,
-      [
-        `[member] ${who} joined ${input.project.slug} as contributor`,
-        (updatedProject?.collaboration?.mode ?? input.project.collaboration?.mode) === 'collaborative'
-          ? 'Project mode: collaborative.'
-          : null,
-      ].filter(Boolean).join('\n'),
+      formatProjectWelcomeNotice({
+        mention,
+        displayName: who,
+        projectName: input.project.displayName,
+        projectSlug: input.project.slug,
+        collaborative: (updatedProject?.collaboration?.mode ?? input.project.collaboration?.mode) === 'collaborative',
+        summaryLine,
+      }),
     );
     return true;
   };
@@ -912,9 +982,11 @@ async function runStart(): Promise<void> {
     await writeFile(statusPath, `${prior.trimEnd()}\n\n${heading}\n${line}\n`, 'utf-8');
 
     const background = await buildProjectBackground(input.project.projectId, `room_signal:${signal.kind}`);
-    const notice = signal.kind === 'progress'
-      ? `[coordination] Progress update from ${input.principalName ?? input.principalId}: ${signal.summary}`
-      : `[coordination] Rebuttal/risk raised by ${input.principalName ?? input.principalId}: ${signal.summary}\nPlease review, respond, and align the next step.`;
+    const notice = formatCoordinationNotice({
+      kind: signal.kind === 'progress' ? 'progress' : 'rebuttal',
+      who: input.principalName ?? input.principalId,
+      summary: signal.summary,
+    });
     await notifyBoundDiscordChannels(input.project.projectId, notice);
 
     if (hubClient && nodeIdentity) {
@@ -957,10 +1029,8 @@ async function runStart(): Promise<void> {
       return claimed.success;
     }
     if (acl.mode !== 'allowlist' || acl.claimed !== true) return false;
-    const ownerPrincipalId = acl.allowedPrincipalIds?.[0];
-    if (ownerPrincipalId && principalId) return ownerPrincipalId === principalId;
-    const ownerUserId = acl.allowedUserIds[0];
-    return ownerUserId === authorId;
+    if (principalId && (acl.allowedPrincipalIds ?? []).includes(principalId)) return true;
+    return (acl.allowedUserIds ?? []).includes(authorId);
   };
 
   const normalizeDiscordPolicyIdentity = (value?: string | null): string | null => {
@@ -987,6 +1057,181 @@ async function runStart(): Promise<void> {
       const normalized = normalizeDiscordPolicyIdentity(value);
       return normalized ? candidates.has(normalized) : false;
     });
+  };
+
+  const handleDiscordRoomParticipant = async (input: {
+    agentId?: string;
+    channelId: string;
+    guildId?: string;
+    kind: 'channel' | 'thread';
+    userIds: string[];
+    reason: 'channel_access_granted' | 'thread_member_added';
+  }): Promise<void> => {
+    const binding = projectBindings.resolve({
+      platform: 'discord',
+      channelTarget: input.kind === 'thread' ? input.channelId : input.channelId,
+      threadId: input.kind === 'thread' ? input.channelId : undefined,
+      agentId: input.agentId,
+    }) ?? projectBindings.resolve({
+      platform: 'discord',
+      channelTarget: input.channelId,
+      agentId: input.agentId,
+    });
+    if (!binding) return;
+    const project = projectRegistry.get(binding.projectId);
+    if (!project || project.status === 'closed') return;
+
+    for (const userId of input.userIds) {
+      const principal = principalRegistry.findByPlatform('discord', userId);
+      if (!principal) continue;
+      const enrolled = await autoEnrollProjectRoomParticipant({
+        project,
+        principalId: principal.principalId,
+        principalName: principal.displayName,
+        platformUserId: userId,
+        platform: 'discord',
+        addedBy: project.ownerPrincipalId,
+      });
+      if (!enrolled) continue;
+    }
+  };
+
+  const collectInviteSharedDocsSnapshot = async (project: Project): Promise<Record<string, string>> => {
+    const projectRoot = resolveProjectRoot(runtimePaths, project);
+    const docs: Record<string, string> = {};
+    for (const name of ['PROJECT.md', 'STATUS.md', 'NOTICE.md']) {
+      const path = join(projectRoot, name);
+      if (!existsSync(path)) continue;
+      try {
+        docs[name] = await readFile(path, 'utf-8');
+      } catch {
+        // Ignore unreadable files; invite snapshots are best-effort.
+      }
+    }
+    return docs;
+  };
+
+  const ensureAcceptedProjectWorkspaceAtRuntime = async (input: {
+    invite: {
+      inviteId: string;
+      projectId: string;
+      projectSlug: string;
+      hostNodeId: string;
+      hostNodeName?: string;
+      issuedByPrincipalId: string;
+      offeredRole: ProjectRole;
+      metadata?: Record<string, unknown>;
+    };
+  }): Promise<{ projectId: string; projectRoot: string; worktreeRoot: string }> => {
+    const inviteMetadata = input.invite.metadata ?? {};
+    const projectDisplayName = typeof inviteMetadata['projectDisplayName'] === 'string'
+      ? inviteMetadata['projectDisplayName']
+      : input.invite.projectSlug;
+    const sharedDocs = typeof inviteMetadata['sharedDocs'] === 'object' && inviteMetadata['sharedDocs']
+      ? inviteMetadata['sharedDocs'] as Record<string, string>
+      : {};
+    const imported = await projectRegistry.importProject({
+      projectId: input.invite.projectId,
+      slug: input.invite.projectSlug,
+      displayName: projectDisplayName,
+      ownerPrincipalId: input.invite.issuedByPrincipalId,
+      status: 'active',
+      collaboration: {
+        mode: 'collaborative',
+        announceJoins: true,
+        autoArtifactSync: true,
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      metadata: {
+        importedFromInviteId: input.invite.inviteId,
+        importedFromNodeId: input.invite.hostNodeId,
+        importedFromNodeName: input.invite.hostNodeName,
+        acceptedRole: input.invite.offeredRole,
+      },
+    });
+
+    await bootstrapProjectHome(runtimePaths.projectsDir, imported);
+    const projectRoot = resolveProjectRoot(runtimePaths, imported);
+    const worktreeRoot = join(runtimePaths.projectsDir, imported.projectId, 'worktrees', getNodeIdentity().nodeId);
+    const worktrees = new ProjectWorktreeRegistry(join(runtimePaths.projectsDir, imported.projectId, 'worktrees'), imported.projectId);
+    await worktrees.load();
+    await worktrees.register({
+      nodeId: getNodeIdentity().nodeId,
+      root: projectRoot,
+      label: 'network-joined',
+      metadata: {
+        source: 'discord_invite_accept',
+        inviteId: input.invite.inviteId,
+        hostNodeId: input.invite.hostNodeId,
+      },
+    });
+
+    const projectDocPath = join(projectRoot, 'PROJECT.md');
+    const statusPath = join(projectRoot, 'STATUS.md');
+    const noticePath = join(projectRoot, 'NOTICE.md');
+    await writeFile(projectDocPath, sharedDocs['PROJECT.md'] ?? [
+      `# ${imported.displayName}`,
+      '',
+      `- Slug: \`${imported.slug}\``,
+      `- Project ID: \`${imported.projectId}\``,
+      `- Imported from node: \`${input.invite.hostNodeName ?? input.invite.hostNodeId}\``,
+      `- Role on this node: \`${input.invite.offeredRole}\``,
+      '',
+    ].join('\n'), 'utf-8');
+    await writeFile(statusPath, sharedDocs['STATUS.md'] ?? '# STATUS\n\n## In Progress\n- Local project mirror bootstrapped from invite\n', 'utf-8');
+    await writeFile(noticePath, sharedDocs['NOTICE.md'] ?? `# NOTICE\n\nJoined through invite \`${input.invite.inviteId}\` from \`${input.invite.hostNodeName ?? input.invite.hostNodeId}\`.\n`, 'utf-8');
+
+    return { projectId: imported.projectId, projectRoot, worktreeRoot };
+  };
+
+  const buildAgentAccessMetadata = async (input: {
+    platform: 'discord' | 'telegram' | 'cli';
+    agentId: string;
+    authorId: string;
+    principalId?: string;
+    project?: Project | null;
+    metadata?: Record<string, unknown>;
+  }): Promise<Record<string, unknown>> => {
+    const baseRole = agentRegistry.get(input.agentId)?.role ?? 'admin';
+    if (input.platform === 'cli') {
+      return {
+        ...(input.metadata ?? {}),
+        agentAccessMode: 'owner_full',
+        effectiveAgentRole: baseRole,
+        sharedMemoryOnly: false,
+      };
+    }
+
+    const acl = await loadAllowFrom(input.platform, input.agentId);
+    const isBotOrigin = input.metadata?.['isBot'] === true;
+    const ownerPrincipalIds = acl.allowedPrincipalIds ?? [];
+    const ownerUserIds = acl.allowedUserIds ?? [];
+    const isOwner = acl.mode === 'open' && acl.claimed !== true
+      ? true
+      : Boolean(
+          (input.principalId && ownerPrincipalIds.includes(input.principalId))
+          || ownerUserIds.includes(input.authorId),
+        );
+
+    if (isOwner) {
+      return {
+        ...(input.metadata ?? {}),
+        agentAccessMode: 'owner_full',
+        effectiveAgentRole: baseRole,
+        sharedMemoryOnly: false,
+      };
+    }
+
+    return {
+      ...(input.metadata ?? {}),
+      agentAccessMode: isBotOrigin ? 'peer_agent_readonly' : 'shared_readonly',
+      effectiveAgentRole: 'shared_reader',
+      sharedMemoryOnly: true,
+      ownerUserIds,
+      ownerPrincipalIds,
+      isBotOrigin,
+    };
   };
 
   const isDiscordInvocationAllowed = async (input: {
@@ -1056,6 +1301,40 @@ async function runStart(): Promise<void> {
         };
       }
     }
+    return null;
+  };
+
+  const isCurrentNodeHint = (hint: string, executionContext?: ExecutionContext | null): boolean => matchesNodeHint(hint, [
+    getNodeIdentity().nodeId,
+    getNodeIdentity().name,
+    executionContext?.agentId,
+    (executionContext as { agentName?: string } | null | undefined)?.agentName,
+    String(executionContext?.metadata?.['agentDiscordName'] ?? ''),
+  ]);
+
+  const resolveRemoteNodeIdFromHint = (
+    hint: string,
+    trusts: TrustStore,
+    invites: InviteStore,
+  ): { nodeId: string; nodeName?: string } | null => {
+    const normalized = normalizeNodeHint(hint);
+    if (!normalized) return null;
+
+    for (const trust of trusts.list()) {
+      if (matchesNodeHint(normalized, [trust.remoteNodeId, trust.remoteNodeName])) {
+        return { nodeId: trust.remoteNodeId, nodeName: trust.remoteNodeName };
+      }
+    }
+
+    for (const invite of invites.list()) {
+      if (invite.targetNodeId && matchesNodeHint(normalized, [invite.targetNodeId, invite.targetHint])) {
+        return { nodeId: invite.targetNodeId };
+      }
+      if (matchesNodeHint(normalized, [invite.hostNodeId, invite.hostNodeName])) {
+        return { nodeId: invite.hostNodeId, nodeName: invite.hostNodeName };
+      }
+    }
+
     return null;
   };
 
@@ -1172,14 +1451,18 @@ async function runStart(): Promise<void> {
         error: 'missing_project_context',
       };
     }
-    if (!isProjectMember(projectMemberships, project.projectId, executionContext.principalId)) {
-      return { output: 'Only project members can sync project state.', success: false, error: 'project_membership_required' };
+    const accessMode = String(executionContext.metadata?.['agentAccessMode'] ?? '');
+    const isOwnerFull = accessMode === 'owner_full';
+    const isMember = isProjectMember(projectMemberships, project.projectId, executionContext.principalId);
+    const canWriteSharedState = isOwnerFull || isMember;
+    if (!canWriteSharedState && accessMode !== 'shared_readonly') {
+      return { output: 'Only project members or the owning agent can sync project state.', success: false, error: 'project_membership_required' };
     }
 
     const projectRoot = resolveProjectRoot(runtimePaths, project);
     const statusPath = join(projectRoot, 'STATUS.md');
     const update = input.update?.trim();
-    if (update) {
+    if (update && canWriteSharedState) {
       const prior = existsSync(statusPath) ? await readFile(statusPath, 'utf-8') : '# STATUS\n';
       const stamp = new Date().toISOString();
       const appended = `${prior.trimEnd()}\n\n## Sync Notes\n- ${stamp} — ${update}\n`;
@@ -1189,7 +1472,7 @@ async function runStart(): Promise<void> {
     const background = await buildProjectBackground(project.projectId, update ? 'project_sync:update' : 'project_sync');
     const summaryLine = background?.summary.split('\n')[0] ?? `Project ${project.displayName} (${project.slug})`;
     const announce = [
-      `[sync] ${summaryLine}`,
+      canWriteSharedState ? `[sync] ${summaryLine}` : `[shared sync] ${summaryLine}`,
       update ? `Update: ${update}` : null,
     ].filter(Boolean).join('\n');
     await notifyBoundDiscordChannels(project.projectId, announce);
@@ -1197,7 +1480,8 @@ async function runStart(): Promise<void> {
     return {
       output: [
         `Synced ${project.displayName} (${project.slug}).`,
-        update ? 'STATUS.md updated.' : null,
+        update && canWriteSharedState ? 'STATUS.md updated.' : null,
+        update && !canWriteSharedState ? 'Shared view announced without modifying project files.' : null,
         background ? `Background: ${summaryLine}` : null,
       ].filter(Boolean).join('\n'),
       success: true,
@@ -1286,6 +1570,363 @@ async function runStart(): Promise<void> {
         status: updated.status,
       },
     };
+  };
+
+  const manageDiscordRoomAccessFromTool = async (
+    input: DiscordRoomAccessRequest,
+    ctx: import('./tools/tool.js').ToolContext,
+  ): Promise<import('./tools/tool.js').ToolResult> => {
+    const executionContext = ctx.executionContext;
+    if (!executionContext?.agentId) {
+      return { output: '', success: false, error: 'Missing Discord execution context.' };
+    }
+
+    const targetIdentity = input.targetIdentity?.trim();
+    if (!targetIdentity) {
+      return { output: 'targetIdentity is required.', success: false, error: 'missing_target_identity' };
+    }
+
+    const resolved = resolveDiscordPrincipalIdentity(targetIdentity);
+    if (!resolved?.userId) {
+      return {
+        output: `I could not resolve ${targetIdentity} to a Discord user in my known identities. Use their Discord user ID, or have them speak in the server first so I can map them.`,
+        success: false,
+        error: 'target_not_found',
+      };
+    }
+
+    const metadata = executionContext.metadata ?? {};
+    const currentChannelId = typeof metadata['parentChannelId'] === 'string'
+      ? metadata['parentChannelId']
+      : executionContext.channelTarget;
+    const channelId = input.channelId?.trim() || currentChannelId;
+    if (!channelId) {
+      return {
+        output: 'I do not know which Discord channel to update from this context. Specify the channel explicitly.',
+        success: false,
+        error: 'missing_channel_context',
+      };
+    }
+
+    const discordInstance = (ctx.channel instanceof DiscordChannel ? ctx.channel : null)
+      ?? discordChannels.find((channel) => channel.agentId === executionContext.agentId)
+      ?? discordChannel
+      ?? null;
+    if (!discordInstance) {
+      return { output: '', success: false, error: 'Discord channel adapter not available.' };
+    }
+
+    try {
+      await discordInstance.grantChannelAccess(channelId, resolved.userId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('is not in guild')) {
+        return {
+          output: `${resolved.displayName} is not currently in this Discord server. Invite them to the server first, then I can grant channel access.`,
+          success: false,
+          error: 'target_not_in_guild',
+        };
+      }
+      return {
+        output: `Failed to grant Discord channel access: ${message}`,
+        success: false,
+        error: 'channel_access_failed',
+      };
+    }
+
+    return {
+      output: `Granted ${resolved.displayName} access to this Discord channel.`,
+      success: true,
+      data: {
+        channelId,
+        principalId: resolved.principalId,
+        userId: resolved.userId,
+      },
+    };
+  };
+
+  const inspectDiscordRoomFromTool = async (
+    input: DiscordRoomInspectRequest,
+    ctx: import('./tools/tool.js').ToolContext,
+  ): Promise<import('./tools/tool.js').ToolResult> => {
+    const executionContext = ctx.executionContext;
+    if (!executionContext?.agentId) {
+      return { output: '', success: false, error: 'Missing Discord execution context.' };
+    }
+
+    const metadata = executionContext.metadata ?? {};
+    const currentChannelId = typeof metadata['parentChannelId'] === 'string'
+      ? metadata['parentChannelId']
+      : executionContext.channelTarget;
+    const threadId = typeof metadata['threadId'] === 'string' ? metadata['threadId'] : undefined;
+    const channelId = input.channelId?.trim() || currentChannelId;
+    if (!channelId) {
+      return {
+        output: 'I do not know which Discord room to inspect from this context.',
+        success: false,
+        error: 'missing_channel_context',
+      };
+    }
+
+    const discordInstance = (ctx.channel instanceof DiscordChannel ? ctx.channel : null)
+      ?? discordChannels.find((channel) => channel.agentId === executionContext.agentId)
+      ?? discordChannel
+      ?? null;
+    if (!discordInstance) {
+      return { output: '', success: false, error: 'Discord channel adapter not available.' };
+    }
+
+    let inspection;
+    try {
+      inspection = await discordInstance.inspectRoom(channelId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        output: `Failed to inspect the Discord room: ${message}`,
+        success: false,
+        error: 'discord_room_inspect_failed',
+      };
+    }
+
+    const binding = projectBindings.resolve({
+      platform: 'discord',
+      channelTarget: channelId,
+      threadId,
+      agentId: executionContext.agentId,
+    });
+    const project = binding ? projectRegistry.get(binding.projectId) : null;
+    const membershipLines = project
+      ? projectMemberships.listByProject(project.projectId).map((membership) => {
+          const principal = principalRegistry.get(membership.principalId);
+          return `- ${principal?.displayName ?? membership.principalId} (${membership.role})`;
+        })
+      : [];
+
+    return {
+      output: [
+        'Use this as the fresh room-access snapshot for the current question. Do not reuse older membership observations or infer unlisted users/bots.',
+        'When you need to @mention someone in Discord, use the provided `mention` form exactly as shown.',
+        `Discord room: ${inspection.channelName ?? inspection.channelId}`,
+        inspection.guildName ? `Server: ${inspection.guildName} (${inspection.guildId})` : null,
+        `Room type: ${inspection.kind}${inspection.private ? ' (private/private-like)' : ' (public or role-visible)'}`,
+        `Observed room members/access count: ${inspection.members.length}`,
+        inspection.members.length > 0
+          ? `Observed room members/access:\n${inspection.members.map((member) => `- ${member.displayName ?? member.username ?? member.userId} [${member.source}] mention=<@${member.userId}> userId=${member.userId}`).join('\n')}`
+          : 'Observed room members/access: none listed directly from Discord.',
+        inspection.notes.length > 0 ? `Notes:\n${inspection.notes.map((note) => `- ${note}`).join('\n')}` : null,
+        project
+          ? `Bound project: ${project.displayName} (${project.slug})`
+          : 'Bound project: none',
+        project
+          ? `Project members:\n${membershipLines.join('\n') || '- none'}`
+          : null,
+      ].filter(Boolean).join('\n'),
+      success: true,
+      data: {
+        inspection,
+        projectId: project?.projectId,
+        projectSlug: project?.slug,
+      },
+    };
+  };
+
+  const manageProjectNetworkFromTool = async (
+    input: ProjectNetworkManageRequest,
+    ctx: import('./tools/tool.js').ToolContext,
+  ): Promise<import('./tools/tool.js').ToolResult> => {
+    const executionContext = ctx.executionContext;
+    if (!executionContext?.principalId || !nodeIdentity) {
+      return { output: '', success: false, error: 'Missing principal or node execution context.' };
+    }
+
+    const invites = new InviteStore(runtimePaths.invitesFile);
+    const trusts = new TrustStore(runtimePaths.trustFile);
+    await Promise.all([invites.load(), trusts.load()]);
+
+    if (input.action === 'invite_list') {
+      await invites.expirePending();
+      const rows = invites.list();
+      return {
+        output: rows.length > 0
+          ? `Invites on this node:\n${rows.map((invite) => `- ${invite.inviteId}: ${invite.projectSlug} host=${invite.hostNodeName ?? invite.hostNodeId} role=${invite.offeredRole} status=${invite.status}`).join('\n')}`
+          : 'No invites found on this node.',
+        success: true,
+        data: rows,
+      };
+    }
+
+    if (input.action === 'invite_create') {
+      const project = resolveProjectForToolContext({
+        explicitProjectSlug: input.projectSlug,
+        executionContext,
+        sessionId: ctx.sessionId,
+      });
+      if (!project) {
+        return { output: 'There is no active or recently created project in this conversation yet. Move to the project room, or specify the project slug.', success: false, error: 'missing_project_context' };
+      }
+      const actorRole = getProjectRole(projectMemberships, project.projectId, executionContext.principalId);
+      const isOwner = project.ownerPrincipalId === executionContext.principalId;
+      if (!isOwner && actorRole !== 'admin') {
+        return { output: 'Only the project owner or an admin can invite another node into the project.', success: false, error: 'owner_or_admin_required' };
+      }
+      const targetHint = input.targetHint?.trim();
+      const resolvedRemote = input.targetNodeId?.trim()
+        ? { nodeId: input.targetNodeId.trim(), nodeName: undefined }
+        : (targetHint ? resolveRemoteNodeIdFromHint(targetHint, trusts, invites) : null);
+      const targetNodeId = resolvedRemote?.nodeId;
+      const role = (input.role ?? 'contribute');
+      const ceiling = (input.ceiling ?? role);
+      const sharedDocs = await collectInviteSharedDocsSnapshot(project);
+      if (!isValidAuthorityCeiling(role) || !isValidAuthorityCeiling(ceiling) || !isRoleWithinAuthorityCeiling(role, ceiling)) {
+        return { output: 'The requested invite role exceeds the requested authority ceiling.', success: false, error: 'invalid_role_ceiling' };
+      }
+
+      if (!targetNodeId && !targetHint) {
+        return {
+          output: 'Provide a target bot/agent identity such as `jiaxinassistant`, an @mention, or a node name so I can route the invite without exposing raw node IDs.',
+          success: false,
+          error: 'missing_target_identity',
+        };
+      }
+
+      if (targetNodeId) {
+        await trusts.createPending({
+          remoteNodeId: targetNodeId,
+          remoteNodeName: resolvedRemote?.nodeName,
+          authorityCeiling: ceiling,
+          metadata: { source: 'discord_invite_create', projectId: project.projectId },
+        });
+      }
+      const invite = await invites.create({
+        projectId: project.projectId,
+        projectSlug: project.slug,
+        hostNodeId: nodeIdentity.nodeId,
+        hostNodeName: nodeIdentity.name,
+        issuedByPrincipalId: executionContext.principalId,
+        targetNodeId,
+        targetHint,
+        offeredRole: role,
+        metadata: {
+          transport: targetNodeId ? 'hub_or_direct' : 'discord_relay',
+          requestedByAgentId: executionContext.agentId,
+          projectDisplayName: project.displayName,
+          projectDescription: project.description ?? '',
+          sharedDocs,
+        },
+      });
+      await projectRegistry.update(project.projectId, {
+        collaboration: {
+          ...(project.collaboration ?? {}),
+          mode: 'collaborative',
+          announceJoins: true,
+          autoArtifactSync: project.collaboration?.autoArtifactSync ?? true,
+        },
+      });
+
+      const useDiscordRelay = !targetNodeId && ctx.channelType === 'discord' && ctx.channel instanceof DiscordChannel;
+      if (useDiscordRelay) {
+        const discordChannel = ctx.channel as DiscordChannel;
+        const channelTarget = executionContext.threadId ?? executionContext.channelTarget;
+        if (!channelTarget) {
+          return {
+            output: 'I created the invite locally, but this Discord context does not expose a room target to relay it. Ask again from the shared room or specify the remote node directly.',
+            success: false,
+            error: 'missing_discord_relay_target',
+          };
+        }
+        const relayPacket = renderProjectInviteRelay({
+          kind: 'tako_project_invite_v1',
+          invite,
+        });
+        await discordChannel.send({
+          target: channelTarget,
+          content: [
+            `📨 Invite prepared for ${targetHint}.`,
+            `Project: ${project.displayName} (${project.slug})`,
+            `Role: ${role}`,
+            '',
+            relayPacket,
+          ].join('\n'),
+        }).catch(() => {});
+        return {
+          output: `Created a Discord relay invite for ${targetHint} to join ${project.displayName} (${project.slug}) as ${role}. Ask the receiving agent in this room to accept the latest invite here.`,
+          success: true,
+          data: invite,
+        };
+      }
+
+      return {
+        output: targetNodeId
+          ? `Created invite ${invite.inviteId} for ${resolvedRemote?.nodeName ?? targetNodeId} to join ${project.displayName} (${project.slug}) as ${role}. The remote agent can accept invite ${invite.inviteId}.`
+          : `Created invite ${invite.inviteId} for ${targetHint} to join ${project.displayName} (${project.slug}) as ${role}.`,
+        success: true,
+        data: invite,
+      };
+    }
+
+    if (input.action === 'invite_accept') {
+      let invite: ProjectInvite | null = null;
+      const inviteId = input.inviteId?.trim();
+      if (inviteId) {
+        invite = invites.get(inviteId);
+      } else if (ctx.channelType === 'discord' && ctx.channel instanceof DiscordChannel) {
+        const channelTarget = executionContext.threadId ?? executionContext.channelTarget;
+        if (channelTarget) {
+          const messages = await ctx.channel.fetchRecentMessages(channelTarget, 30).catch(() => []);
+          const relay = selectLatestMatchingRelayInvite(messages, (candidate) => {
+            const targetHint = candidate.invite.targetHint?.trim();
+            return !targetHint || isCurrentNodeHint(targetHint, executionContext);
+          });
+          if (relay) {
+            invite = await invites.importInvite(relay.invite);
+          }
+        }
+      }
+      if (!invite) {
+        return {
+          output: inviteId
+            ? `Invite not found: ${inviteId}`
+            : 'No matching project invite was found for this agent in the recent Discord room history. Ask the host agent to post an invite here or specify the invite ID.',
+          success: false,
+          error: inviteId ? 'invite_not_found' : 'invite_not_found_in_room',
+        };
+      }
+      if (invite.status !== 'pending') {
+        return { output: `Invite ${invite.inviteId} is not pending. Current status: ${invite.status}.`, success: false, error: 'invite_not_pending' };
+      }
+      const desiredCeiling = (input.ceiling ?? invite.offeredRole);
+      if (!isValidAuthorityCeiling(desiredCeiling) || !isRoleWithinAuthorityCeiling(invite.offeredRole, desiredCeiling)) {
+        return { output: `Invite role ${invite.offeredRole} exceeds requested ceiling ${desiredCeiling}.`, success: false, error: 'offered_role_exceeds_ceiling' };
+      }
+      const currentTrust = trusts.getByNodeId(invite.hostNodeId);
+      if (currentTrust && compareAuthorityRoles(invite.offeredRole, currentTrust.authorityCeiling) > 0) {
+        return { output: `Invite role ${invite.offeredRole} exceeds trusted ceiling ${currentTrust.authorityCeiling}.`, success: false, error: 'offered_role_exceeds_existing_ceiling' };
+      }
+      if (!currentTrust) {
+        await trusts.createPending({
+          remoteNodeId: invite.hostNodeId,
+          remoteNodeName: invite.hostNodeName,
+          authorityCeiling: desiredCeiling,
+          metadata: { source: 'discord_invite_accept', projectId: invite.projectId },
+        });
+      }
+      const trust = await trusts.markTrusted(invite.hostNodeId, desiredCeiling);
+      await invites.markAccepted(invite.inviteId);
+      const localProject = await ensureAcceptedProjectWorkspaceAtRuntime({ invite });
+      const sharedDocNames = Object.keys((invite.metadata?.['sharedDocs'] as Record<string, string> | undefined) ?? {});
+      return {
+        output: [
+          `Accepted invite ${invite.inviteId}.`,
+          `This node joined ${invite.projectSlug} and trusted host ${invite.hostNodeName ?? invite.hostNodeId}.`,
+          `Provisioned local project root ${localProject.projectRoot} and registered worktree ${localProject.worktreeRoot}.`,
+          sharedDocNames.length > 0 ? `Synced shared docs: ${sharedDocNames.join(', ')}.` : null,
+        ].filter(Boolean).join(' '),
+        success: true,
+        data: { trust, localProject, inviteId: invite.inviteId },
+      };
+    }
+
+    return { output: '', success: false, error: 'unsupported_action' };
   };
 
   const bootstrapDiscordProjectFromTool = async (
@@ -1696,11 +2337,15 @@ async function runStart(): Promise<void> {
     if (participantJoined) {
       const snapshot = await buildProjectBackground(shared.projectId, `participant_join:${input.ctx.principalId}`, shared);
       const collaborativeProject = projectRegistry.get(shared.projectId);
-      if (collaborativeProject?.collaboration?.announceJoins !== false) {
+      const suppressLocalDiscordJoinNotice = input.ctx.platform === 'discord'
+        && isProjectMember(projectMemberships, shared.projectId, input.ctx.principalId);
+      if (collaborativeProject?.collaboration?.announceJoins !== false && !suppressLocalDiscordJoinNotice) {
         const who = input.ctx.principalName ?? input.ctx.authorName ?? input.ctx.principalId;
-        const lines = [`[join] ${who} joined ${collaborativeProject?.slug ?? shared.projectId}`];
-        if (snapshot?.summary) lines.push('', snapshot.summary);
-        await notifyBoundDiscordChannels(shared.projectId, lines.join('\n'));
+        await notifyBoundDiscordChannels(shared.projectId, formatSharedSessionJoinNotice({
+          displayName: who,
+          projectSlug: collaborativeProject?.slug ?? shared.projectId,
+          snapshotSummary: snapshot?.summary,
+        }));
       }
       const networkSession = networkSharedSessions.findByProject(shared.projectId)
         .find((candidate) => candidate.participantNodeIds.includes(getNodeIdentity().nodeId)) ?? null;
@@ -1894,6 +2539,11 @@ async function runStart(): Promise<void> {
     manageMember: manageDiscordProjectMemberFromTool,
     syncProject: syncDiscordProjectFromTool,
     closeProject: closeDiscordProjectFromTool,
+    manageNetwork: manageProjectNetworkFromTool,
+  }));
+  toolRegistry.registerAll(createDiscordRoomTools({
+    manageAccess: manageDiscordRoomAccessFromTool,
+    inspectRoom: inspectDiscordRoomFromTool,
   }));
 
   // ACP runtime (acpx-backed coding agent sessions)
@@ -2271,6 +2921,7 @@ async function runStart(): Promise<void> {
     msg: InboundMessage,
     channel?: Channel,
     resolvedProject?: { project: Project } | null,
+    accessMetadata?: Record<string, unknown>,
   ): Promise<ReturnType<typeof sessions.getOrCreate> | null> {
     // If the channel has a bound agentId, use it directly; otherwise resolve from bindings
     const channelType = msg.channelId.split(':')[0] ?? 'cli';
@@ -2312,7 +2963,7 @@ async function runStart(): Promise<void> {
             channelTarget,
             project: resolvedProject?.project ?? null,
             threadId: msg.threadId,
-            metadata: { ...(msg.author.meta ?? {}) },
+            metadata: { ...(accessMetadata ?? msg.author.meta ?? {}) },
           })),
           threadBinding: true,
         },
@@ -2328,7 +2979,7 @@ async function runStart(): Promise<void> {
         channelTarget,
         project: resolvedProject?.project ?? null,
         threadId: msg.threadId,
-        metadata: { ...(msg.author.meta ?? {}) },
+        metadata: { ...(accessMetadata ?? msg.author.meta ?? {}) },
       });
       const shared = await ensureSharedSession({ session, ctx });
       if (shared) {
@@ -2402,7 +3053,7 @@ async function runStart(): Promise<void> {
           channelTarget,
           threadId: msg.threadId,
           project: resolvedProject?.project ?? null,
-          metadata: { ...(msg.author.meta ?? {}) },
+          metadata: { ...(accessMetadata ?? msg.author.meta ?? {}) },
         })),
       },
     });
@@ -2417,7 +3068,7 @@ async function runStart(): Promise<void> {
       channelTarget,
       threadId: msg.threadId,
       project: resolvedProject?.project ?? null,
-      metadata: { ...(msg.author.meta ?? {}) },
+      metadata: { ...(accessMetadata ?? msg.author.meta ?? {}) },
     });
     const shared = await ensureSharedSession({ session, ctx });
     if (shared) {
@@ -2458,6 +3109,16 @@ async function runStart(): Promise<void> {
       const projectChannelTarget = (msg.author.meta?.parentChannelId as string | undefined) ?? channelTarget;
       const guildId = msg.author.meta?.guildId as string | undefined;
       const inboundAgentId = channel.agentId ?? resolveAgentForChannel(agentRegistry.list(), channelType, channelTarget, guildId);
+      const isBotOrigin = msg.author.meta?.isBot === true;
+      if (shouldThrottlePeerAgentMessage({
+        targetAgentId: inboundAgentId,
+        authorId: msg.author.id,
+        channelId: msg.channelId,
+        isBot: isBotOrigin,
+      })) {
+        console.warn(`[discord-peer-loop] throttled bot-authored message agent=${inboundAgentId} author=${msg.author.id} channel=${msg.channelId}`);
+        return;
+      }
       const resolvedProject = resolveProject({
         platform: channelType as 'discord' | 'telegram' | 'cli',
         channelTarget: projectChannelTarget,
@@ -2487,6 +3148,14 @@ async function runStart(): Promise<void> {
       const projectRole = resolvedProject
         ? getProjectRole(projectMemberships, resolvedProject.project.projectId, principal.principalId) ?? undefined
         : undefined;
+      const accessMetadata = await buildAgentAccessMetadata({
+        platform: channelType as 'discord' | 'telegram' | 'cli',
+        agentId: inboundAgentId,
+        authorId: msg.author.id,
+        principalId: principal.principalId,
+        project: resolvedProject?.project ?? null,
+        metadata: { ...(msg.author.meta ?? {}) },
+      });
       const inboundContext = buildInboundExecutionContext({
         agentId: inboundAgentId,
         principal,
@@ -2498,7 +3167,7 @@ async function runStart(): Promise<void> {
         threadId: msg.threadId,
         project: resolvedProject?.project ?? null,
         projectRole: projectRole ?? null,
-        metadata: { ...(msg.author.meta ?? {}) },
+        metadata: accessMetadata,
       });
       const inboundText = typeof msg.content === 'string' ? msg.content : '';
       await hooks.emit('message_received', {
@@ -2525,7 +3194,10 @@ async function runStart(): Promise<void> {
         // even when the bot is unclaimed (open mode) or when the user isn't on the allowlist yet.
         const isClaimCommand = inboundText.trim().toLowerCase() === '/claim';
         if (!isClaimCommand) {
-          const allowed = await isUserAllowed(aclChannel, aclAgentId, msg.author.id, principal.principalId);
+          const allowSharedReadonly = resolvedProject != null;
+          const allowed = allowSharedReadonly
+            ? true
+            : await isUserAllowed(aclChannel, aclAgentId, msg.author.id, principal.principalId);
           if (!allowed) return; // silently ignore
         }
       }
@@ -2535,6 +3207,7 @@ async function runStart(): Promise<void> {
           project: resolvedProject.project,
           principalId: principal.principalId,
           principalName: principal.displayName,
+          platformUserId: msg.author.id,
           platform: channelType as 'discord' | 'telegram' | 'cli',
           addedBy: resolvedProject.project.ownerPrincipalId,
         });
@@ -2552,7 +3225,7 @@ async function runStart(): Promise<void> {
         }
       }
 
-      const session = await getSession(msg, channel, resolvedProject);
+      const session = await getSession(msg, channel, resolvedProject, accessMetadata);
 
       // ACP thread routing: if getSession returned null, the message was handled by ACP runtime
       if (!session) return;
@@ -3250,6 +3923,14 @@ async function runStart(): Promise<void> {
     const projectRole = resolvedProject
       ? getProjectRole(projectMemberships, resolvedProject.project.projectId, principal.principalId) ?? undefined
       : undefined;
+    const accessMetadata = await buildAgentAccessMetadata({
+      platform: 'discord',
+      agentId,
+      authorId: author.id,
+      principalId: principal.principalId,
+      project: resolvedProject?.project ?? null,
+      metadata: guildId ? { guildId } : undefined,
+    });
     const channelKey = `discord:${channelId}`;
     const sessionKey = `agent:${agentId}:${channelKey}`;
     const session = sessions.getOrCreate(sessionKey, {
@@ -3264,7 +3945,7 @@ async function runStart(): Promise<void> {
         channelTarget: channelId,
         project: resolvedProject?.project ?? null,
         projectRole: projectRole ?? null,
-        metadata: guildId ? { guildId } : undefined,
+        metadata: accessMetadata,
       })),
     });
     let executionContext = buildInboundExecutionContext({
@@ -3278,7 +3959,7 @@ async function runStart(): Promise<void> {
       channelTarget: channelId,
       project: resolvedProject?.project ?? null,
       projectRole: projectRole ?? null,
-      metadata: guildId ? { guildId } : undefined,
+      metadata: accessMetadata,
     });
     const shared = await ensureSharedSession({ session, ctx: executionContext });
     if (shared) {
@@ -3297,6 +3978,7 @@ async function runStart(): Promise<void> {
         project: resolvedProject.project,
         principalId: principal.principalId,
         principalName: principal.displayName,
+        platformUserId: author.id,
         platform: 'discord',
         addedBy: resolvedProject.project.ownerPrincipalId,
       });
@@ -3392,6 +4074,16 @@ async function runStart(): Promise<void> {
         reason: event.reason,
       });
     });
+    discordChannel.onRoomParticipant(async (event) => {
+      await handleDiscordRoomParticipant({
+        agentId: discordChannel?.agentId,
+        channelId: event.channelId,
+        guildId: event.guildId,
+        kind: event.kind,
+        userIds: event.userIds,
+        reason: event.reason,
+      });
+    });
 
     discordChannel.onSelectMenu(async (interaction) => {
       if (interaction.customId === 'setup_agent_select') {
@@ -3480,6 +4172,14 @@ async function runStart(): Promise<void> {
       const projectRole = resolvedProject
         ? getProjectRole(projectMemberships, resolvedProject.project.projectId, principal.principalId) ?? undefined
         : undefined;
+      const accessMetadata = await buildAgentAccessMetadata({
+        platform: 'telegram',
+        agentId,
+        authorId: author.id,
+        principalId: principal.principalId,
+        project: resolvedProject?.project ?? null,
+        metadata: { ...(author.meta ?? {}) },
+      });
       const sessionKey = `agent:${agentId}:${channelKey}`;
       const session = sessions.getOrCreate(sessionKey, {
         name: `${agentId}/${channelKey}/${author.name}`,
@@ -3493,7 +4193,7 @@ async function runStart(): Promise<void> {
           channelTarget: chatId,
           project: resolvedProject?.project ?? null,
           projectRole: projectRole ?? null,
-          metadata: { ...(author.meta ?? {}) },
+          metadata: accessMetadata,
         })),
       });
       let executionContext = buildInboundExecutionContext({
@@ -3507,7 +4207,7 @@ async function runStart(): Promise<void> {
         channelTarget: chatId,
         project: resolvedProject?.project ?? null,
         projectRole: projectRole ?? null,
-        metadata: { ...(author.meta ?? {}) },
+        metadata: accessMetadata,
       });
       const shared = await ensureSharedSession({ session, ctx: executionContext });
       if (shared) {
@@ -3565,6 +4265,16 @@ async function runStart(): Promise<void> {
           kind: event.kind,
           reason: event.reason,
           agentId: agent.id,
+        });
+      });
+      agentDiscord.onRoomParticipant(async (event) => {
+        await handleDiscordRoomParticipant({
+          agentId: agent.id,
+          channelId: event.channelId,
+          guildId: event.guildId,
+          kind: event.kind,
+          userIds: event.userIds,
+          reason: event.reason,
         });
       });
 

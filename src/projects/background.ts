@@ -37,10 +37,13 @@ export class ProjectBackgroundRegistry {
     reason: string;
     sharedSession?: SharedSession | null;
     networkSession?: NetworkSharedSession | null;
-    members: Array<{ principalId: string; displayName?: string; role: ProjectRole }>;
-    artifacts: ProjectArtifact[];
-    worktrees: Array<ProjectWorktree & { branch?: string; dirty?: boolean }>;
+    members?: Array<{ principalId: string; displayName?: string; role: ProjectRole }>;
+    artifacts?: ProjectArtifact[];
+    worktrees?: Array<ProjectWorktree & { branch?: string; dirty?: boolean }>;
   }): Promise<ProjectBackgroundSnapshot> {
+    const members = input.members ?? [];
+    const artifacts = input.artifacts ?? [];
+    const worktrees = input.worktrees ?? [];
     const participantIds = input.sharedSession?.participantIds ?? [];
     const activeParticipantIds = input.sharedSession?.activeParticipantIds ?? [];
     const collaborationMode = input.project.collaboration?.mode ?? 'single-user';
@@ -52,17 +55,17 @@ export class ProjectBackgroundRegistry {
       `Reason: ${input.reason}`,
       `Mode: ${collaborationMode}`,
       `Room state: ${roomState}`,
-      `Members: ${input.members.length}`,
+      `Members: ${members.length}`,
       `Participants: ${participantIds.length}`,
-      input.members.length > 0
-        ? `Roles: ${input.members.slice(0, 8).map((member) => `${member.displayName ?? member.principalId}(${member.role})`).join(', ')}`
+      members.length > 0
+        ? `Roles: ${members.slice(0, 8).map((member) => `${member.displayName ?? member.principalId}(${member.role})`).join(', ')}`
         : 'Roles: none',
       input.networkSession ? `Participant nodes: ${input.networkSession.participantNodeIds.join(', ')}` : null,
-      input.artifacts.length > 0
-        ? `Recent artifacts: ${input.artifacts.slice(0, 5).map((artifact) => `${artifact.name} [${artifact.kind}]`).join(', ')}`
+      artifacts.length > 0
+        ? `Recent artifacts: ${artifacts.slice(0, 5).map((artifact) => `${artifact.name} [${artifact.kind}]`).join(', ')}`
         : 'Recent artifacts: none',
-      input.worktrees.length > 0
-        ? `Worktrees: ${input.worktrees.map((worktree) => `${worktree.nodeId}${worktree.branch ? `:${worktree.branch}` : ''}${worktree.dirty ? '*' : ''}`).join(', ')}`
+      worktrees.length > 0
+        ? `Worktrees: ${worktrees.map((worktree) => `${worktree.nodeId}${worktree.branch ? `:${worktree.branch}` : ''}${worktree.dirty ? '*' : ''}`).join(', ')}`
         : 'Worktrees: none',
     ].filter(Boolean).join('\n');
     return await this.save({
@@ -70,20 +73,20 @@ export class ProjectBackgroundRegistry {
       projectSlug: input.project.slug,
       generatedAt: new Date().toISOString(),
       reason: input.reason,
-      memberCount: input.members.length,
-      members: input.members,
+      memberCount: members.length,
+      members,
       participantCount: participantIds.length,
       participantIds,
       activeParticipantIds,
       participantNodeIds: input.networkSession?.participantNodeIds,
-      recentArtifacts: input.artifacts.slice(0, 10).map((artifact) => ({
+      recentArtifacts: artifacts.slice(0, 10).map((artifact) => ({
         artifactId: artifact.artifactId,
         name: artifact.name,
         kind: artifact.kind,
         sourceNodeId: artifact.sourceNodeId,
         createdAt: artifact.createdAt,
       })),
-      worktrees: input.worktrees.map((worktree) => ({
+      worktrees: worktrees.map((worktree) => ({
         nodeId: worktree.nodeId,
         root: worktree.root,
         label: worktree.label,

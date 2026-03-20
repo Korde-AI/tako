@@ -69,6 +69,15 @@ interface Command {
   handler: (args: string, ctx: CommandContext) => Promise<string>;
 }
 
+const SHARED_READONLY_COMMANDS = new Set([
+  'help',
+  'status',
+  'whoami',
+  'projectbg',
+  'patches',
+  'usage',
+]);
+
 export class CommandRegistry {
   private commands = new Map<string, Command>();
 
@@ -87,6 +96,11 @@ export class CommandRegistry {
 
     const cmd = this.commands.get(name);
     if (!cmd) return null;
+
+    const agentAccessMode = ctx.executionContext?.metadata?.['agentAccessMode'];
+    if (agentAccessMode === 'shared_readonly' && !SHARED_READONLY_COMMANDS.has(name)) {
+      return 'This is another person\'s agent. In shared-readonly mode you can inspect shared project or channel information, but you cannot execute commands or mutations here.';
+    }
 
     return cmd.handler(args, ctx);
   }

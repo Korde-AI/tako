@@ -72,6 +72,29 @@ export class ProjectRegistry {
     return project;
   }
 
+  async importProject(project: Project): Promise<Project> {
+    await this.ensureLoaded();
+    const existingById = this.get(project.projectId);
+    const existingBySlug = this.findBySlug(project.slug);
+    if (existingBySlug && existingBySlug.projectId !== project.projectId) {
+      throw new Error(`Project slug already exists: ${project.slug}`);
+    }
+    const now = new Date().toISOString();
+    const normalized: Project = {
+      ...project,
+      createdAt: project.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.projects.set(normalized.projectId, existingById ? {
+      ...existingById,
+      ...normalized,
+      projectId: existingById.projectId,
+      updatedAt: now,
+    } : normalized);
+    await this.save();
+    return this.projects.get(project.projectId)!;
+  }
+
   async update(projectId: string, patch: Partial<Project>): Promise<Project> {
     await this.ensureLoaded();
     const existing = this.get(projectId);

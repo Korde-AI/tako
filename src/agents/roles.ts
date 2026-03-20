@@ -19,7 +19,7 @@
  * Custom roles can be created by the root agent at runtime.
  */
 
-export type RoleName = 'admin' | 'operator' | 'editor' | 'standard' | 'viewer' | 'restricted' | 'readonly';
+export type RoleName = 'admin' | 'operator' | 'editor' | 'standard' | 'viewer' | 'restricted' | 'readonly' | 'shared_reader';
 
 export interface AgentRole {
   /** Role identifier. */
@@ -142,6 +142,51 @@ export const PREDEFINED_ROLES: Record<string, AgentRole> = {
     description: 'Read-only — can read files and respond, no side effects',
     allowTools: ['read', 'list_directory', 'memory_search', 'web_search', 'web_fetch'],
     denyTools: ['exec', 'shell', 'write', 'edit', 'exec_command', 'cron_add', 'cron_remove', 'agents_add', 'agents_remove'],
+    canCreateAgents: false,
+    canDeleteAgents: false,
+    canManageRoles: false,
+    canEditConfig: false,
+    canExec: false,
+    canWriteGlobal: false,
+    canBindChannels: false,
+  },
+  shared_reader: {
+    name: 'shared_reader',
+    description: 'Shared readonly access — can inspect shared project and channel state, but cannot mutate or execute side effects',
+    allowTools: [
+      'read',
+      'list_directory',
+      'glob_search',
+      'content_search',
+      'memory_search',
+      'web_search',
+      'web_fetch',
+      'github_repo_inspect',
+      'extract_office_text',
+      'discord_room_inspect',
+      'git_status',
+      'session_status',
+    ],
+    denyTools: [
+      'exec',
+      'shell',
+      'write',
+      'edit',
+      'apply_patch',
+      'exec_command',
+      'cron_add',
+      'cron_remove',
+      'agents_add',
+      'agents_remove',
+      'project_bootstrap',
+      'project_member_manage',
+      'project_close',
+      'message',
+      'discord_room_access_manage',
+      'allow_from_add',
+      'allow_from_remove',
+      'memory_write',
+    ],
     canCreateAgents: false,
     canDeleteAgents: false,
     canManageRoles: false,
