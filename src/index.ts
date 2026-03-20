@@ -1065,6 +1065,38 @@ async function runStart(): Promise<void> {
     return updated;
   };
 
+  const reconcileProjectCollaborationMode = async (projectId: string, reason: string): Promise<Project | null> => {
+    const project = projectRegistry.get(projectId);
+    if (!project) return null;
+    const memberCount = projectMemberships.listByProject(projectId).length;
+    const nextMode = memberCount > 1 ? 'collaborative' : 'single-user';
+    if ((project.collaboration?.mode ?? 'single-user') === nextMode) {
+      if (nextMode === 'collaborative') {
+        return activateCollaborativeProject(projectId, reason);
+      }
+      return project;
+    }
+    const updated = await projectRegistry.update(projectId, {
+      collaboration: {
+        ...(project.collaboration ?? {}),
+        mode: nextMode,
+        announceJoins: nextMode === 'collaborative',
+        autoArtifactSync: nextMode === 'collaborative'
+          ? (project.collaboration?.autoArtifactSync ?? true)
+          : false,
+      },
+      metadata: {
+        ...(project.metadata ?? {}),
+        collaborationReconciledAt: new Date().toISOString(),
+        collaborationReconciledReason: reason,
+      },
+    });
+    if (hubClient && nodeIdentity) {
+      await syncProjectToHub(hubClient, nodeIdentity, updated, projectMemberships).catch(() => {});
+    }
+    return updated;
+  };
+
   const autoEnrollProjectRoomParticipant = async (input: {
     project: Project;
     principalId: string;
@@ -1454,6 +1486,62 @@ async function runStart(): Promise<void> {
     return null;
   };
 
+  const resolveDiscordPrincipalIdentityFromRoom = async (
+    identity: string,
+    ctx: import('./tools/tool.js').ToolContext,
+  ): Promise<{ principalId: string; displayName: string; userId?: string; username?: string } | null> => {
+    const executionContext = ctx.executionContext;
+    if (ctx.channelType !== 'discord' || !executionContext?.agentId) return null;
+    const discordInstance = (ctx.channel instanceof DiscordChannel ? ctx.channel : null)
+      ?? discordChannels.find((channel) => channel.agentId === executionContext.agentId)
+      ?? discordChannel
+      ?? null;
+    if (!discordInstance) return null;
+
+    const metadata = executionContext.metadata ?? {};
+    const channelId = typeof metadata['parentChannelId'] === 'string'
+      ? metadata['parentChannelId']
+      : executionContext.channelTarget;
+    if (!channelId) return null;
+
+    const normalized = normalizeDiscordPolicyIdentity(identity);
+    if (!normalized) return null;
+
+    const inspection = await discordInstance.inspectRoom(channelId).catch(() => null);
+    if (!inspection) return null;
+
+    const matched = inspection.members.find((member) => {
+      const candidates = new Set<string>();
+      const add = (value?: string | null) => {
+        const candidate = normalizeDiscordPolicyIdentity(value);
+        if (candidate) candidates.add(candidate);
+      };
+      add(member.userId);
+      add(member.username);
+      add(member.displayName);
+      return candidates.has(normalized);
+    });
+    if (!matched) return null;
+
+    const principal = await principalRegistry.getOrCreateHuman({
+      displayName: matched.displayName ?? matched.username ?? matched.userId,
+      platform: 'discord',
+      platformUserId: matched.userId,
+      username: matched.username,
+      metadata: {
+        channelId: executionContext.channelId,
+        learnedFromRoomInspection: true,
+      },
+    });
+
+    return {
+      principalId: principal.principalId,
+      displayName: principal.displayName,
+      userId: matched.userId,
+      username: matched.username,
+    };
+  };
+
   const isCurrentNodeHint = (hint: string, executionContext?: ExecutionContext | null): boolean => matchesNodeHint(hint, [
     getNodeIdentity().nodeId,
     getNodeIdentity().name,
@@ -1538,16 +1626,50 @@ async function runStart(): Promise<void> {
 
     const targetIdentity = input.targetIdentity?.trim();
     if (!targetIdentity) {
-      return { output: 'targetIdentity is required to add a project member.', success: false, error: 'missing_target_identity' };
+      return { output: `targetIdentity is required to ${input.action} a project member.`, success: false, error: 'missing_target_identity' };
     }
-    const resolved = resolveDiscordPrincipalIdentity(targetIdentity);
+    const resolved = resolveDiscordPrincipalIdentity(targetIdentity)
+      ?? await resolveDiscordPrincipalIdentityFromRoom(targetIdentity, ctx);
     if (!resolved) {
       return {
-        output: `Could not resolve Discord user or principal: ${targetIdentity}`,
+        output: `Could not resolve Discord user or principal: ${targetIdentity}. Ask that user or agent to speak in this room once so I can map them, then retry.`,
         success: false,
         error: 'target_not_found',
       };
     }
+    if (input.action === 'remove') {
+      const removed = await projectMemberships.remove(project.projectId, resolved.principalId);
+      if (!removed) {
+        return {
+          output: `${resolved.displayName} is not currently a member of ${project.displayName} (${project.slug}).`,
+          success: false,
+          error: 'membership_not_found',
+        };
+      }
+      const updatedProject = await reconcileProjectCollaborationMode(project.projectId, `member_removed:${resolved.principalId}`);
+      const background = await buildProjectBackground(project.projectId, `member_removed:${resolved.principalId}`);
+      if (hubClient && nodeIdentity) {
+        await syncProjectMembershipsToHub(hubClient, nodeIdentity, project.projectId, projectMemberships).catch(() => {});
+      }
+      await notifyBoundDiscordChannels(
+        project.projectId,
+        `🧹 ${resolved.displayName} was removed from ${project.slug}.`,
+      );
+      return {
+        output: [
+          `Removed ${resolved.displayName} from ${project.displayName} (${project.slug}).`,
+          `Project mode: ${updatedProject?.collaboration?.mode ?? 'single-user'}.`,
+          background ? `Background: ${background.summary.split('\n')[0]}` : null,
+        ].filter(Boolean).join('\n'),
+        success: true,
+        data: {
+          projectId: project.projectId,
+          principalId: resolved.principalId,
+          removed: true,
+        },
+      };
+    }
+
     const role: ProjectRole = input.role ?? 'contribute';
     await projectMemberships.upsert({
       projectId: project.projectId,
@@ -1555,21 +1677,19 @@ async function runStart(): Promise<void> {
       role,
       addedBy: executionContext.principalId,
     });
-    const updatedProject = await activateCollaborativeProject(project.projectId, `member_added:${resolved.principalId}`);
+    const updatedProject = await reconcileProjectCollaborationMode(project.projectId, `member_added:${resolved.principalId}`);
     const background = await buildProjectBackground(project.projectId, `member_added:${resolved.principalId}`);
     if (hubClient && nodeIdentity) {
       await syncProjectMembershipsToHub(hubClient, nodeIdentity, project.projectId, projectMemberships).catch(() => {});
     }
     await notifyBoundDiscordChannels(
       project.projectId,
-      `[member] ${resolved.displayName} added to ${project.slug} as ${role}`,
+      `🎉 ${resolved.displayName} joined ${project.slug} as ${role}.`,
     );
     return {
       output: [
         `Added ${resolved.displayName} to ${project.displayName} (${project.slug}) as ${role}.`,
-        updatedProject?.collaboration?.mode === 'collaborative'
-          ? 'Project mode: collaborative.'
-          : 'Project mode remains single-user until more than one member exists.',
+        `Project mode: ${updatedProject?.collaboration?.mode ?? 'single-user'}.`,
         background ? `Background: ${background.summary.split('\n')[0]}` : null,
       ].filter(Boolean).join('\n'),
       success: true,

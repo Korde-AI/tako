@@ -118,6 +118,28 @@ describe('ToolRegistry', () => {
     });
   });
 
+  it('parses natural remove-member input', async () => {
+    let seen: unknown = null;
+    const tools = createProjectTools({
+      bootstrapFromPrompt: async () => ({ output: 'ok', success: true }),
+      manageMember: async (input) => {
+        seen = input;
+        return { output: 'ok', success: true };
+      },
+      syncProject: async () => ({ output: 'ok', success: true }),
+      closeProject: async () => ({ output: 'ok', success: true }),
+      manageNetwork: async () => ({ output: 'ok', success: true }),
+    });
+    const tool = tools.find((candidate) => candidate.name === 'project_member_manage');
+    assert.ok(tool);
+
+    await tool!.execute({ input: 'remove CC from this project' }, makeCtx('/tmp'));
+    assert.deepEqual(seen, {
+      action: 'remove',
+      targetIdentity: 'CC',
+    });
+  });
+
   it('registers office extraction tool', () => {
     const names = officeTools.map((tool) => tool.name);
     assert.ok(names.includes('extract_office_text'));

@@ -9,7 +9,7 @@ export interface ProjectBootstrapRequest {
 }
 
 export interface ProjectMemberManageRequest {
-  action: 'add' | 'list';
+  action: 'add' | 'remove' | 'list';
   targetIdentity?: string;
   role?: 'read' | 'contribute' | 'write' | 'admin';
   projectSlug?: string;
@@ -86,14 +86,14 @@ export function createProjectTools(deps: ProjectToolDeps): Tool[] {
 
   const projectMemberManage: Tool = {
     name: 'project_member_manage',
-    description: 'Manage project members in the current project room. Use this when the owner or a project admin wants to add or invite a human collaborator to the project, or list current project members. In Discord, this should be used for requests like "add Jiaxin to this project", "invite wandering123", or "who is in this project?". Adding a member promotes the project to collaborative mode.',
+    description: 'Manage project members in the current project room. Use this when the owner or a project admin wants to add, remove, invite, or list project members. In Discord, this should be used for requests like "add Jiaxin to this project", "remove CC from this project", "invite wandering123", or "who is in this project?". Member changes should follow current room membership when relevant.',
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['add', 'list'],
-          description: 'Whether to add a member or list current members.',
+          enum: ['add', 'remove', 'list'],
+          description: 'Whether to add, remove, or list project members.',
         },
         targetIdentity: {
           type: 'string',
@@ -118,6 +118,13 @@ export function createProjectTools(deps: ProjectToolDeps): Tool[] {
         const lower = input.toLowerCase();
         if (!input || lower === 'list' || lower.includes('who is in') || lower.includes('list members')) {
           return deps.manageMember({ action: 'list' }, ctx);
+        }
+        if (lower.startsWith('remove ') || lower.startsWith('delete ')) {
+          const targetIdentity = input
+            .replace(/^(remove|delete)\s+/i, '')
+            .replace(/\s+(from)\s+this project.*$/i, '')
+            .trim();
+          return deps.manageMember({ action: 'remove', targetIdentity }, ctx);
         }
         const targetIdentity = input
           .replace(/^(add|invite)\s+/i, '')

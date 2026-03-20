@@ -17,12 +17,16 @@ Use this when the project already exists and the task is administrative.
 ## Membership
 
 - Only the owner or an admin should add members.
+- Only the owner or an admin should remove members.
 - Adding a second member is what allows the project to become collaborative.
+- Removing members should also reconcile the project mode back to `single-user` if only one member remains.
 - Use stable identifiers when possible:
   - Discord user ID
   - username
   - display name
   - principal ID
+- If the target is visible in the current Discord room but not yet mapped, use current room state to resolve them instead of stopping at "cannot resolve".
+- If a visible room member still cannot be resolved cleanly, explicitly @mention them and ask them to speak once so the agent can map them.
 - Do not force a member-management tool call if the user is only asking for explanation or current state.
 - If the user asks who is here, who can access this channel, or whether you can see the members in the current Discord room, use `discord_room_inspect` first.
 - Treat Discord room access as volatile state: run a fresh inspection for each current-membership question instead of relying on earlier inspection results.
