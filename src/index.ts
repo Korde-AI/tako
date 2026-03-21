@@ -37,6 +37,8 @@ import { writePidFile, removePidFile } from './daemon/pid.js';
 import { CLIChannel } from './channels/cli.js';
 import { TUIChannel } from './channels/tui.js';
 import { DiscordChannel } from './channels/discord.js';
+import { createDiscordProjectCoordinator } from './channels/discord-project-coordinator.js';
+import { createDiscordDeliveryAdapter } from './channels/discord-delivery-adapter.js';
 import { TelegramChannel } from './channels/telegram.js';
 import { AnthropicProvider } from './providers/anthropic.js';
 import { OpenAIProvider } from './providers/openai.js';
@@ -163,6 +165,10 @@ import { getWorktreeRepoStatus } from './projects/patches.js';
 import { ProjectWorktreeRegistry } from './projects/worktrees.js';
 import { inferProjectBootstrapIntent } from './projects/bootstrap-intent.js';
 import { detectProjectRoomSignal } from './projects/room-signals.js';
+import { ProjectChannelCoordinatorRegistry } from './projects/channel-coordination.js';
+import { createProjectRoomLifecycle } from './projects/room-lifecycle.js';
+import { registerKernelToolPacks, registerRuntimeToolPacks, registerSurfaceToolPacks, registerCronToolPack } from './core/tool-composition.js';
+import { ChannelDeliveryRegistry } from './core/channel-delivery.js';
 import { SharedSessionRegistry, type SharedSession } from './sessions/shared.js';
 import {
   createHubClientFromConfig,
@@ -838,65 +844,45 @@ async function runStart(): Promise<void> {
     return { projectRoot, worktreeRoot, created };
   };
 
-  const handleClosedProjectRoom = async (input: {
-    platform: 'discord';
-    channelId: string;
-    kind: 'channel' | 'thread';
-    reason: 'deleted' | 'archived';
-    agentId?: string;
-  }): Promise<void> => {
-    const deactivated = await projectBindings.deactivateMatching({
-      platform: input.platform,
-      channelTarget: input.kind === 'channel' ? input.channelId : undefined,
-      threadId: input.kind === 'thread' ? input.channelId : undefined,
-      agentId: input.agentId,
-      reason: `${input.platform}_${input.kind}_${input.reason}`,
-    });
-    if (deactivated.length === 0) return;
-
-    for (const binding of deactivated) {
-      const project = projectRegistry.get(binding.projectId);
-      if (project) {
-        await projectRegistry.update(project.projectId, {
-          metadata: {
-            ...(project.metadata ?? {}),
-            roomState: 'pending_rebind',
-            pendingRoomReason: `${input.platform}_${input.kind}_${input.reason}`,
-            pendingRoomAt: new Date().toISOString(),
-            pendingRoomBindingId: binding.bindingId,
-          },
-        });
-      }
-
-      for (const session of sessions.list()) {
-        const samePlatform = session.metadata?.channelType === input.platform;
-        const sameChannel = session.metadata?.channelTarget === binding.channelTarget;
-        const sameThread = binding.threadId
-          ? session.metadata?.threadId === binding.threadId || session.metadata?.channelTarget === binding.threadId
-          : true;
-        const sameProject = session.metadata?.projectId === binding.projectId;
-        if (samePlatform && sameChannel && sameThread && sameProject) {
-          sessions.archiveSession(session.id);
-        }
-      }
-
-      await buildProjectBackground(binding.projectId, `room_closed:${input.platform}_${input.kind}_${input.reason}`);
+  const notifyBoundDiscordChannels = async (projectId: string, content: string): Promise<void> => {
+    const bindings = projectBindings.list().filter((binding) => binding.projectId === projectId);
+    if (bindings.length === 0) return;
+    const bindingsByPlatform = new Map<string, typeof bindings>();
+    for (const binding of bindings) {
+      const bucket = bindingsByPlatform.get(binding.platform) ?? [];
+      bucket.push(binding);
+      bindingsByPlatform.set(binding.platform, bucket);
+    }
+    for (const [platform, platformBindings] of bindingsByPlatform.entries()) {
+      const coordinator = projectChannelCoordinators.get(platform as 'discord' | 'telegram' | 'cli');
+      if (!coordinator) continue;
+      await coordinator.notifyBindings(platformBindings, content);
     }
   };
 
-  const notifyBoundDiscordChannels = async (projectId: string, content: string): Promise<void> => {
-    const discordBindings = projectBindings.list().filter((binding) => binding.projectId === projectId && binding.platform === 'discord');
-    if (discordBindings.length === 0) return;
-    for (const binding of discordBindings) {
-      const discordTarget = binding.threadId ?? binding.channelTarget;
-      const discordInstance = discordChannels.find((channel) => channel.agentId === binding.agentId)
-        ?? discordChannel
-        ?? discordChannels[0];
-      if (!discordInstance) continue;
-      await discordInstance.send({
-        target: discordTarget,
-        content,
-      }).catch(() => {});
+  const notifyPatchApprovalReview = async (input: {
+    projectId: string;
+    projectSlug?: string;
+    approvalId: string;
+    artifactName: string;
+    requestedByNodeId?: string;
+    requestedByPrincipalId?: string;
+    sourceBranch?: string;
+    targetBranch?: string;
+    conflictSummary?: string;
+  }): Promise<void> => {
+    const bindings = projectBindings.list().filter((binding) => binding.projectId === input.projectId);
+    if (bindings.length === 0) return;
+    const bindingsByPlatform = new Map<string, typeof bindings>();
+    for (const binding of bindings) {
+      const bucket = bindingsByPlatform.get(binding.platform) ?? [];
+      bucket.push(binding);
+      bindingsByPlatform.set(binding.platform, bucket);
+    }
+    for (const [platform, platformBindings] of bindingsByPlatform.entries()) {
+      const adapter = channelDeliveryRegistry.get(platform as 'discord' | 'telegram' | 'cli');
+      if (!adapter) continue;
+      await adapter.sendPatchApproval(platformBindings, input);
     }
   };
 
@@ -938,40 +924,6 @@ async function runStart(): Promise<void> {
       `${input.displayName} joined **${input.projectSlug}**.`,
       input.snapshotSummary ? `🧭 ${input.snapshotSummary}` : null,
     ].filter(Boolean).join('\n');
-  };
-
-  const notifyPatchApprovalReview = async (input: {
-    projectId: string;
-    approvalId: string;
-    artifactName: string;
-    requestedByNodeId?: string;
-    requestedByPrincipalId?: string;
-    sourceBranch?: string;
-    targetBranch?: string;
-    conflictSummary?: string;
-  }): Promise<void> => {
-    const project = projectRegistry.get(input.projectId);
-    const discordBindings = projectBindings.list().filter((binding) => binding.projectId === input.projectId && binding.platform === 'discord');
-    if (discordBindings.length === 0) return;
-    for (const binding of discordBindings) {
-      const discordTarget = binding.threadId ?? binding.channelTarget;
-      const discordInstance = discordChannels.find((channel) => channel.agentId === binding.agentId)
-        ?? discordChannel
-        ?? discordChannels[0];
-      if (!discordInstance) continue;
-      await discordInstance.sendPatchApprovalRequest({
-        channelId: discordTarget,
-        projectId: input.projectId,
-        projectSlug: project?.slug,
-        approvalId: input.approvalId,
-        artifactName: input.artifactName,
-        requestedByNodeId: input.requestedByNodeId,
-        requestedByPrincipalId: input.requestedByPrincipalId,
-        sourceBranch: input.sourceBranch,
-        targetBranch: input.targetBranch,
-        conflictSummary: input.conflictSummary,
-      }).catch(() => {});
-    }
   };
 
   const peerAgentLoopWindow = new Map<string, number[]>();
@@ -1230,43 +1182,6 @@ async function runStart(): Promise<void> {
       const normalized = normalizeDiscordPolicyIdentity(value);
       return normalized ? candidates.has(normalized) : false;
     });
-  };
-
-  const handleDiscordRoomParticipant = async (input: {
-    agentId?: string;
-    channelId: string;
-    guildId?: string;
-    kind: 'channel' | 'thread';
-    userIds: string[];
-    reason: 'channel_access_granted' | 'thread_member_added';
-  }): Promise<void> => {
-    const binding = projectBindings.resolve({
-      platform: 'discord',
-      channelTarget: input.kind === 'thread' ? input.channelId : input.channelId,
-      threadId: input.kind === 'thread' ? input.channelId : undefined,
-      agentId: input.agentId,
-    }) ?? projectBindings.resolve({
-      platform: 'discord',
-      channelTarget: input.channelId,
-      agentId: input.agentId,
-    });
-    if (!binding) return;
-    const project = projectRegistry.get(binding.projectId);
-    if (!project || project.status === 'closed') return;
-
-    for (const userId of input.userIds) {
-      const principal = principalRegistry.findByPlatform('discord', userId);
-      if (!principal) continue;
-      const enrolled = await autoEnrollProjectRoomParticipant({
-        project,
-        principalId: principal.principalId,
-        principalName: principal.displayName,
-        platformUserId: userId,
-        platform: 'discord',
-        addedBy: project.ownerPrincipalId,
-      });
-      if (!enrolled) continue;
-    }
   };
 
   const collectInviteSharedDocsSnapshot = async (project: Project): Promise<Record<string, string>> => {
@@ -1901,16 +1816,15 @@ async function runStart(): Promise<void> {
       };
     }
 
-    const discordInstance = (ctx.channel instanceof DiscordChannel ? ctx.channel : null)
-      ?? discordChannels.find((channel) => channel.agentId === executionContext.agentId)
-      ?? discordChannel
-      ?? null;
-    if (!discordInstance) {
-      return { output: '', success: false, error: 'Discord channel adapter not available.' };
-    }
+    const coordinator = projectChannelCoordinators.get('discord');
+    if (!coordinator) return { output: '', success: false, error: 'Discord project coordinator not available.' };
 
     try {
-      await discordInstance.grantChannelAccess(channelId, resolved.userId);
+      await coordinator.grantRoomAccess({
+        agentId: executionContext.agentId,
+        channelId,
+        userId: resolved.userId,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes('is not in guild')) {
@@ -1961,17 +1875,15 @@ async function runStart(): Promise<void> {
       };
     }
 
-    const discordInstance = (ctx.channel instanceof DiscordChannel ? ctx.channel : null)
-      ?? discordChannels.find((channel) => channel.agentId === executionContext.agentId)
-      ?? discordChannel
-      ?? null;
-    if (!discordInstance) {
-      return { output: '', success: false, error: 'Discord channel adapter not available.' };
-    }
+    const coordinator = projectChannelCoordinators.get('discord');
+    if (!coordinator) return { output: '', success: false, error: 'Discord project coordinator not available.' };
 
     let inspection;
     try {
-      inspection = await discordInstance.inspectRoom(channelId);
+      inspection = await coordinator.inspectRoom({
+        agentId: executionContext.agentId,
+        channelId,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return {
@@ -2334,20 +2246,30 @@ async function runStart(): Promise<void> {
           error: 'missing_guild_context',
         };
       }
-      createdChannel = await ctx.channel.createChannel(guildId, slug, {
-        topic: description.slice(0, 1024),
-        privateUserId: executionContext.authorId,
+      const coordinator = projectChannelCoordinators.get('discord');
+      if (!coordinator) {
+        return {
+          output: 'Discord project coordinator is not available. Cannot create or bind a Discord project room here.',
+          success: false,
+          error: 'missing_discord_project_coordinator',
+        };
+      }
+      const room = await coordinator.bootstrapProjectRoom({
+        agentId: executionContext.agentId,
+        guildId,
+        currentChannelTarget,
+        currentThreadId,
+        parentChannelId,
+        slug,
+        displayName: project.displayName,
+        description,
+        destination,
+        ownerUserId: executionContext.authorId,
       });
-      boundChannelTarget = createdChannel.id;
-      boundThreadId = undefined;
-    } else if (destination === 'thread' && !currentThreadId) {
-      const threadName = project.displayName.slice(0, 90);
-      createdThread = await ctx.channel.createThread(parentChannelId ?? currentChannelTarget, threadName);
-      boundChannelTarget = parentChannelId ?? currentChannelTarget;
-      boundThreadId = createdThread.id;
-    } else if (parentChannelId && currentThreadId) {
-      boundChannelTarget = parentChannelId;
-      boundThreadId = currentThreadId;
+      boundChannelTarget = room.channelTarget;
+      boundThreadId = room.threadId;
+      createdChannel = room.createdChannel ?? null;
+      createdThread = room.createdThread ?? null;
     }
 
     await projectBindings.bind({
@@ -2831,37 +2753,24 @@ async function runStart(): Promise<void> {
   if (config.tools.allow) toolRegistry.setAllowList(config.tools.allow);
   toolRegistry.setToolPolicy(toolPolicy);
 
-  // Register kernel tools
-  toolRegistry.registerAll(fsTools);
-  toolRegistry.registerAll(searchTools);
-  toolRegistry.registerAll(execTools);
-  toolRegistry.registerAll(webTools);
-  toolRegistry.registerAll(createGitHubTools());
-  toolRegistry.registerAll(createBrowserTools({
-    enabled: config.tools.browser?.enabled ?? true,
-    headless: config.tools.browser?.headless ?? true,
-    idleTimeoutMs: config.tools.browser?.idleTimeoutMs ?? 300_000,
-  }));
-  toolRegistry.registerAll(imageTools);
-  toolRegistry.registerAll(gitTools);
-  toolRegistry.registerAll(officeTools);
-  toolRegistry.registerAll(createMemoryTools({
-    workspaceRoot: config.memory.workspace,
+  // Register kernel tool packs
+  registerKernelToolPacks({
+    toolRegistry,
+    config,
     embeddingProvider: embeddingProvider ?? undefined,
-  }));
-  toolRegistry.registerAll(createSessionTools(sessions));
-  toolRegistry.registerAll(createAllowFromTools());
-  toolRegistry.registerAll(createProjectTools({
+    sessions,
+    projectTools: {
     bootstrapFromPrompt: bootstrapDiscordProjectFromTool,
     manageMember: manageDiscordProjectMemberFromTool,
     syncProject: syncDiscordProjectFromTool,
     closeProject: closeDiscordProjectFromTool,
     manageNetwork: manageProjectNetworkFromTool,
-  }));
-  toolRegistry.registerAll(createDiscordRoomTools({
-    manageAccess: manageDiscordRoomAccessFromTool,
-    inspectRoom: inspectDiscordRoomFromTool,
-  }));
+    },
+    discordRoomTools: {
+      manageAccess: manageDiscordRoomAccessFromTool,
+      inspectRoom: inspectDiscordRoomFromTool,
+    },
+  });
 
   // ACP runtime (acpx-backed coding agent sessions)
   const acpConfig = resolveAcpConfig(
@@ -3179,21 +3088,9 @@ async function runStart(): Promise<void> {
     }
 
     if (!reused && input.channel?.id === 'discord' && typeof approval.channelTarget === 'string' && ownerUserIds.length > 0) {
-      const discordChannelRef = input.channel as DiscordChannel & {
-        sendPeerTaskApprovalRequest?: (request: {
-          channelId: string;
-          approvalId: string;
-          agentId: string;
-          requesterName?: string;
-          requesterIsBot?: boolean;
-          toolName: string;
-          toolArgsPreview?: string;
-          ownerMentions?: string[];
-          projectSlug?: string;
-        }) => Promise<string>;
-      };
-      if (typeof discordChannelRef.sendPeerTaskApprovalRequest === 'function') {
-        await discordChannelRef.sendPeerTaskApprovalRequest({
+      const adapter = channelDeliveryRegistry.get('discord');
+      if (adapter) {
+        await adapter.sendPeerTaskApproval({
           channelId: approval.channelTarget,
           approvalId: approval.approvalId,
           agentId: approval.agentId,
@@ -3203,6 +3100,7 @@ async function runStart(): Promise<void> {
           toolArgsPreview: summarizePeerTaskArgs(approval.toolArgs),
           ownerMentions: ownerUserIds.map((id) => `<@${id}>`),
           projectSlug: approval.projectSlug,
+          agentIdHint: input.executionContext?.agentId ?? input.session.metadata?.agentId as string | undefined,
         }).catch((err) => {
           console.error('[peer-approval] Failed to send approval card:', err instanceof Error ? err.message : err);
         });
@@ -3328,16 +3226,6 @@ async function runStart(): Promise<void> {
     return agentLoop;
   }
 
-  // Register set_model tool
-  toolRegistry.register(createModelTool({
-    setModel: (ref) => {
-      agentLoop.setModel(ref);
-      config.providers.primary = ref;
-      import('./config/resolve.js').then(m => m.patchConfig({ providers: { primary: ref } })).catch(() => {});
-    },
-    getModel: () => agentLoop.getModel(),
-  }));
-
   // ─── Sub-agent orchestrator ────────────────────────────────────────
 
   const subAgentOrchestrator = new SubAgentOrchestrator(sessions, agentLoop);
@@ -3390,15 +3278,25 @@ async function runStart(): Promise<void> {
     }
   });
 
-  // Register agent tools (agents_list, sessions_spawn, sessions_history, subagents)
-  toolRegistry.registerAll(createAgentTools({
-    registry: agentRegistry,
-    orchestrator: subAgentOrchestrator,
-    sessions,
-    threadBindings,
-    acpRuntime,
-    acpConfig,
-  }));
+  registerRuntimeToolPacks({
+    toolRegistry,
+    modelTool: {
+      setModel: (ref) => {
+        agentLoop.setModel(ref);
+        config.providers.primary = ref;
+        import('./config/resolve.js').then(m => m.patchConfig({ providers: { primary: ref } })).catch(() => {});
+      },
+      getModel: () => agentLoop.getModel(),
+    },
+    agentTools: {
+      registry: agentRegistry,
+      orchestrator: subAgentOrchestrator,
+      sessions,
+      threadBindings,
+      acpRuntime,
+      acpConfig,
+    },
+  });
 
   // ─── Command registry ────────────────────────────────────────────
 
@@ -4197,6 +4095,8 @@ async function runStart(): Promise<void> {
   const channels: Channel[] = [];
   let discordChannel: DiscordChannel | undefined;
   const discordChannels: DiscordChannel[] = [];
+  const projectChannelCoordinators = new ProjectChannelCoordinatorRegistry();
+  const channelDeliveryRegistry = new ChannelDeliveryRegistry();
   let telegramChannel: TelegramChannel | undefined;
 
   // Track which channels have received an intro (persistent across restarts)
@@ -4684,7 +4584,7 @@ async function runStart(): Promise<void> {
     });
 
     discordChannel.onRoomClosed(async (event) => {
-      await handleClosedProjectRoom({
+      await projectRoomLifecycle.handleClosedRoom({
         platform: 'discord',
         channelId: event.channelId,
         kind: event.kind,
@@ -4692,7 +4592,7 @@ async function runStart(): Promise<void> {
       });
     });
     discordChannel.onRoomParticipant(async (event) => {
-      await handleDiscordRoomParticipant({
+      await projectRoomLifecycle.handleRoomParticipant({
         agentId: discordChannel?.agentId,
         channelId: event.channelId,
         guildId: event.guildId,
@@ -4939,7 +4839,7 @@ async function runStart(): Promise<void> {
       });
 
       agentDiscord.onRoomClosed(async (event) => {
-        await handleClosedProjectRoom({
+        await projectRoomLifecycle.handleClosedRoom({
           platform: 'discord',
           channelId: event.channelId,
           kind: event.kind,
@@ -4948,7 +4848,7 @@ async function runStart(): Promise<void> {
         });
       });
       agentDiscord.onRoomParticipant(async (event) => {
-        await handleDiscordRoomParticipant({
+        await projectRoomLifecycle.handleRoomParticipant({
           agentId: agent.id,
           channelId: event.channelId,
           guildId: event.guildId,
@@ -5048,6 +4948,26 @@ async function runStart(): Promise<void> {
     }
   }
 
+  if (discordChannel || discordChannels.length > 0) {
+    projectChannelCoordinators.register(createDiscordProjectCoordinator({
+      channels: discordChannels,
+      fallback: discordChannel ?? null,
+    }));
+    channelDeliveryRegistry.register(createDiscordDeliveryAdapter({
+      channels: discordChannels,
+      fallback: discordChannel ?? null,
+    }));
+  }
+
+  const projectRoomLifecycle = createProjectRoomLifecycle({
+    projectBindings,
+    projectRegistry,
+    sessions,
+    principalRegistry,
+    buildProjectBackground: async (projectId, reason) => buildProjectBackground(projectId, reason),
+    autoEnrollProjectRoomParticipant,
+  });
+
   // ─── Skill-provided channels ─────────────────────────────────────
   // Load and register channels provided by skills (plugin pattern).
   const loadedSkills = skillLoader.getAll();
@@ -5106,36 +5026,33 @@ async function runStart(): Promise<void> {
     }
   }
 
-  // Register message tools with per-agent channel resolution.
-  // Each agent gets its own Discord/Telegram channel instance so messages
-  // are sent from the correct bot identity (codecode vs takotako vs pmpm).
-  toolRegistry.registerAll(createMessageTools({
-    resolveDiscord: (agentId?: string) => {
-      if (agentId) {
-        const agentCh = discordChannels.find((ch) => ch.agentId === agentId);
-        if (agentCh) return agentCh;
-      }
-      return discordChannel;
+  registerSurfaceToolPacks({
+    toolRegistry,
+    messageTools: {
+      resolveDiscord: (agentId?: string) => {
+        if (agentId) {
+          const agentCh = discordChannels.find((ch) => ch.agentId === agentId);
+          if (agentCh) return agentCh;
+        }
+        return discordChannel;
+      },
+      resolveTelegram: (agentId?: string) => {
+        const agentTgChannel = channels.find(
+          (ch) => ch.id === 'telegram' && (ch as { agentId?: string }).agentId === agentId,
+        ) as TelegramChannel | undefined;
+        return agentTgChannel ?? telegramChannel;
+      },
     },
-    resolveTelegram: (agentId?: string) => {
-      // Telegram: find agent-specific channel if registered
-      const agentTgChannel = channels.find(
-        (ch) => ch.id === 'telegram' && (ch as { agentId?: string }).agentId === agentId,
-      ) as TelegramChannel | undefined;
-      return agentTgChannel ?? telegramChannel;
+    introspectTools: {
+      config,
+      sessions,
+      startTime,
+      channels,
+      agentIds: agentRegistry.list().map((a: any) => a.id),
+      skillCount: skillManifests.length,
+      version: VERSION,
     },
-  }));
-
-  // Register introspection tools (tako_status, tako_config, tako_logs, session_transcript)
-  toolRegistry.registerAll(createIntrospectTools({
-    config,
-    sessions,
-    startTime,
-    channels,
-    agentIds: agentRegistry.list().map((a: any) => a.id),
-    skillCount: skillManifests.length,
-    version: VERSION,
-  }));
+  });
 
   // ─── Start Gateway ────────────────────────────────────────────────
 
@@ -5500,7 +5417,10 @@ async function runStart(): Promise<void> {
     },
   });
 
-  toolRegistry.registerAll(createCronTools(cronScheduler));
+  registerCronToolPack({
+    toolRegistry,
+    cronScheduler,
+  });
   await cronScheduler.start();
 
   // ─── Session idle sweep ──────────────────────────────────────────
