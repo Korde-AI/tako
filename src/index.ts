@@ -39,6 +39,7 @@ import { TUIChannel } from './channels/tui.js';
 import { DiscordChannel } from './channels/discord.js';
 import { createDiscordProjectCoordinator } from './channels/discord-project-coordinator.js';
 import { createDiscordDeliveryAdapter } from './channels/discord-delivery-adapter.js';
+import { wireAgentDiscordRuntime, wireMainDiscordRuntime } from './channels/discord-runtime.js';
 import { TelegramChannel } from './channels/telegram.js';
 import { AnthropicProvider } from './providers/anthropic.js';
 import { OpenAIProvider } from './providers/openai.js';
@@ -167,6 +168,7 @@ import { inferProjectBootstrapIntent } from './projects/bootstrap-intent.js';
 import { detectProjectRoomSignal } from './projects/room-signals.js';
 import { ProjectChannelCoordinatorRegistry } from './projects/channel-coordination.js';
 import { createProjectRoomLifecycle } from './projects/room-lifecycle.js';
+import { createProjectRoomNotifier } from './projects/room-notifier.js';
 import { registerKernelToolPacks, registerRuntimeToolPacks, registerSurfaceToolPacks, registerCronToolPack } from './core/tool-composition.js';
 import { ChannelDeliveryRegistry } from './core/channel-delivery.js';
 import { createApprovalActionResolver } from './core/approval-actions.js';
@@ -845,22 +847,6 @@ async function runStart(): Promise<void> {
     return { projectRoot, worktreeRoot, created };
   };
 
-  const notifyBoundProjectRooms = async (projectId: string, content: string): Promise<void> => {
-    const bindings = projectBindings.list().filter((binding) => binding.projectId === projectId);
-    if (bindings.length === 0) return;
-    const bindingsByPlatform = new Map<string, typeof bindings>();
-    for (const binding of bindings) {
-      const bucket = bindingsByPlatform.get(binding.platform) ?? [];
-      bucket.push(binding);
-      bindingsByPlatform.set(binding.platform, bucket);
-    }
-    for (const [platform, platformBindings] of bindingsByPlatform.entries()) {
-      const coordinator = projectChannelCoordinators.get(platform as 'discord' | 'telegram' | 'cli');
-      if (!coordinator) continue;
-      await coordinator.notifyBindings(platformBindings, content);
-    }
-  };
-
   const notifyPatchApprovalReview = async (input: {
     projectId: string;
     projectSlug?: string;
@@ -1076,7 +1062,7 @@ async function runStart(): Promise<void> {
     const who = input.principalName ?? input.principalId;
     const mention = input.platformUserId ? `<@${input.platformUserId}>` : who;
     const summaryLine = background?.summary.split('\n')[0] ?? `Project ${input.project.displayName} (${input.project.slug})`;
-    await notifyBoundProjectRooms(
+    await projectRoomNotifier.notify(
       input.project.projectId,
       formatProjectWelcomeNotice({
         mention,
@@ -1113,7 +1099,7 @@ async function runStart(): Promise<void> {
       who: input.principalName ?? input.principalId,
       summary: signal.summary,
     });
-    await notifyBoundProjectRooms(input.project.projectId, notice);
+    await projectRoomNotifier.notify(input.project.projectId, notice);
 
     if (hubClient && nodeIdentity) {
       await syncProjectToHub(hubClient, nodeIdentity, projectRegistry.get(input.project.projectId) ?? input.project, projectMemberships).catch(() => {});
@@ -1585,7 +1571,7 @@ async function runStart(): Promise<void> {
       if (hubClient && nodeIdentity) {
         await syncProjectMembershipsToHub(hubClient, nodeIdentity, project.projectId, projectMemberships).catch(() => {});
       }
-      await notifyBoundProjectRooms(
+      await projectRoomNotifier.notify(
         project.projectId,
         `🧹 ${resolved.displayName} was removed from ${project.slug}.`,
       );
@@ -1616,7 +1602,7 @@ async function runStart(): Promise<void> {
     if (hubClient && nodeIdentity) {
       await syncProjectMembershipsToHub(hubClient, nodeIdentity, project.projectId, projectMemberships).catch(() => {});
     }
-    await notifyBoundProjectRooms(
+    await projectRoomNotifier.notify(
       project.projectId,
       `🎉 ${resolved.displayName} joined ${project.slug} as ${role}.`,
     );
@@ -1683,7 +1669,7 @@ async function runStart(): Promise<void> {
       canWriteSharedState ? `[sync] ${summaryLine}` : `[shared sync] ${summaryLine}`,
       update ? `Update: ${update}` : null,
     ].filter(Boolean).join('\n');
-    await notifyBoundProjectRooms(project.projectId, announce);
+    await projectRoomNotifier.notify(project.projectId, announce);
 
     return {
       output: [
@@ -1757,7 +1743,7 @@ async function runStart(): Promise<void> {
     await writeFile(statusPath, `${prior.trimEnd()}\n${closureBlock}\n`, 'utf-8');
 
     const background = await buildProjectBackground(project.projectId, 'project_close');
-    await notifyBoundProjectRooms(
+    await projectRoomNotifier.notify(
       project.projectId,
       [
         `[project closed] ${updated.displayName} (${updated.slug})`,
@@ -2581,7 +2567,7 @@ async function runStart(): Promise<void> {
         && isProjectMember(projectMemberships, shared.projectId, input.ctx.principalId);
       if (collaborativeProject?.collaboration?.announceJoins !== false && !suppressLocalDiscordJoinNotice) {
         const who = input.ctx.principalName ?? input.ctx.authorName ?? input.ctx.principalId;
-        await notifyBoundProjectRooms(shared.projectId, formatSharedSessionJoinNotice({
+        await projectRoomNotifier.notify(shared.projectId, formatSharedSessionJoinNotice({
           displayName: who,
           projectSlug: collaborativeProject?.slug ?? shared.projectId,
           snapshotSummary: snapshot?.summary,
@@ -3377,7 +3363,7 @@ async function runStart(): Promise<void> {
       const registry = new ProjectApprovalRegistry(projectApprovalsRoot(runtimePaths, projectId), projectId);
       await registry.load();
       const resolved = await registry.resolve(approvalId, decision, reviewedByPrincipalId, reason);
-      await notifyBoundProjectRooms(projectId, `[patch ${decision}] ${resolved.artifactName} (${resolved.approvalId})`);
+      await projectRoomNotifier.notify(projectId, `[patch ${decision}] ${resolved.artifactName} (${resolved.approvalId})`);
       return {
         approvalId: resolved.approvalId,
         artifactName: resolved.artifactName,
@@ -4098,6 +4084,10 @@ async function runStart(): Promise<void> {
   const discordChannels: DiscordChannel[] = [];
   const projectChannelCoordinators = new ProjectChannelCoordinatorRegistry();
   const channelDeliveryRegistry = new ChannelDeliveryRegistry();
+  const projectRoomNotifier = createProjectRoomNotifier({
+    projectBindings,
+    projectChannelCoordinators,
+  });
   let telegramChannel: TelegramChannel | undefined;
 
   // Track which channels have received an intro (persistent across restarts)
@@ -4525,14 +4515,12 @@ async function runStart(): Promise<void> {
       guilds: config.channels.discord.guilds,
     });
 
-    // Register native Discord slash commands
-    discordChannel.setSlashCommands(nativeCommandList, async (commandName, channelId, author, guildId) => {
+    const mainDiscordSlashHandler = async (commandName: string, channelId: string, author: { id: string; name: string; meta?: Record<string, unknown> }, guildId?: string) => {
       const agentId = resolveAgentForChannel(agentRegistry.list(), 'discord', channelId);
       return handleSlashCommand(commandName, channelId, author, agentId, discordChannel!, guildId);
-    });
+    };
 
-    // Register interactive model picker for Discord /model command
-    discordChannel.setInteractiveHandler('model', async (interaction) => {
+    const mainDiscordModelHandler = async (interaction: Parameters<typeof showModelPicker>[0]) => {
       // Build provider → models map from all known providers
       const providerModelsMap: Record<string, string[]> = {};
 
@@ -4570,48 +4558,28 @@ async function runStart(): Promise<void> {
       });
 
       return true;
-    });
+    };
 
-    // Register interactive /setup command for channel configuration
     const setupDeps = {
       listAgents: () => agentRegistry.list().map((a) => ({ id: a.id, description: a.description })),
       saveChannelConfig: (agentId: string, channelType: string, cfg: Record<string, unknown>) =>
         agentRegistry.saveChannelConfig(agentId, channelType, cfg),
     };
 
-    discordChannel.setInteractiveHandler('setup', async (interaction) => {
+    const mainDiscordSetupHandler = async (interaction: Parameters<typeof handleSetupCommand>[0]) => {
       await handleSetupCommand(interaction, setupDeps);
       return true;
-    });
+    };
 
-    discordChannel.onRoomClosed(async (event) => {
-      await projectRoomLifecycle.handleClosedRoom({
-        platform: 'discord',
-        channelId: event.channelId,
-        kind: event.kind,
-        reason: event.reason,
-      });
-    });
-    discordChannel.onRoomParticipant(async (event) => {
-      await projectRoomLifecycle.handleRoomParticipant({
-        agentId: discordChannel?.agentId,
-        channelId: event.channelId,
-        guildId: event.guildId,
-        kind: event.kind,
-        userIds: event.userIds,
-        reason: event.reason,
-      });
-    });
-
-    discordChannel.onSelectMenu(async (interaction) => {
+    const mainDiscordSelectMenuHandler = async (interaction: Parameters<typeof handleAgentSelect>[0]) => {
       if (interaction.customId === 'setup_agent_select') {
         await handleAgentSelect(interaction);
         return true;
       }
       return false;
-    });
+    };
 
-    discordChannel.onButton(async (interaction) => {
+    const mainDiscordButtonHandler = async (interaction: Parameters<typeof handleChannelTypeButton>[0]) => {
       if (interaction.customId.startsWith('setup_type_') || interaction.customId === 'setup_cancel') {
         await handleChannelTypeButton(interaction);
         return true;
@@ -4643,14 +4611,43 @@ async function runStart(): Promise<void> {
         return true;
       }
       return false;
-    });
+    };
 
-    discordChannel.onModalSubmit(async (interaction) => {
+    const mainDiscordModalHandler = async (interaction: Parameters<typeof handleModalSubmit>[0]) => {
       if (interaction.customId.startsWith('setup_modal_')) {
         await handleModalSubmit(interaction, setupDeps);
         return true;
       }
       return false;
+    };
+
+    wireMainDiscordRuntime({
+      channel: discordChannel,
+      nativeCommandList,
+      slashHandler: mainDiscordSlashHandler,
+      modelHandler: mainDiscordModelHandler,
+      setupHandler: mainDiscordSetupHandler,
+      roomClosedHandler: async (event) => {
+        await projectRoomLifecycle.handleClosedRoom({
+          platform: 'discord',
+          channelId: event.channelId,
+          kind: event.kind,
+          reason: event.reason,
+        });
+      },
+      roomParticipantHandler: async (event) => {
+        await projectRoomLifecycle.handleRoomParticipant({
+          agentId: discordChannel?.agentId,
+          channelId: event.channelId,
+          guildId: event.guildId,
+          kind: event.kind,
+          userIds: event.userIds,
+          reason: event.reason,
+        });
+      },
+      selectMenuHandler: mainDiscordSelectMenuHandler,
+      buttonHandler: mainDiscordButtonHandler,
+      modalSubmitHandler: mainDiscordModalHandler,
     });
 
     discordChannels.push(discordChannel);
@@ -4764,29 +4761,30 @@ async function runStart(): Promise<void> {
       });
       agentDiscord.agentId = agent.id;
 
-      // Register slash commands for this agent's bot too
-      agentDiscord.setSlashCommands(nativeCommandList, async (commandName, channelId, author, guildId) => {
-        return handleSlashCommand(commandName, channelId, author, agent.id, agentDiscord, guildId);
-      });
-
-      agentDiscord.onRoomClosed(async (event) => {
-        await projectRoomLifecycle.handleClosedRoom({
-          platform: 'discord',
-          channelId: event.channelId,
-          kind: event.kind,
-          reason: event.reason,
-          agentId: agent.id,
-        });
-      });
-      agentDiscord.onRoomParticipant(async (event) => {
-        await projectRoomLifecycle.handleRoomParticipant({
-          agentId: agent.id,
-          channelId: event.channelId,
-          guildId: event.guildId,
-          kind: event.kind,
-          userIds: event.userIds,
-          reason: event.reason,
-        });
+      wireAgentDiscordRuntime({
+        channel: agentDiscord,
+        nativeCommandList,
+        slashHandler: async (commandName, channelId, author, guildId) =>
+          handleSlashCommand(commandName, channelId, author, agent.id, agentDiscord, guildId),
+        roomClosedHandler: async (event) => {
+          await projectRoomLifecycle.handleClosedRoom({
+            platform: 'discord',
+            channelId: event.channelId,
+            kind: event.kind,
+            reason: event.reason,
+            agentId: agent.id,
+          });
+        },
+        roomParticipantHandler: async (event) => {
+          await projectRoomLifecycle.handleRoomParticipant({
+            agentId: agent.id,
+            channelId: event.channelId,
+            guildId: event.guildId,
+            kind: event.kind,
+            userIds: event.userIds,
+            reason: event.reason,
+          });
+        },
       });
 
       discordChannels.push(agentDiscord);
@@ -4903,7 +4901,7 @@ async function runStart(): Promise<void> {
     peerTaskApprovals,
     createProjectApprovalRegistry: (projectId) =>
       new ProjectApprovalRegistry(projectApprovalsRoot(runtimePaths, projectId), projectId),
-    notifyProjectRooms: notifyBoundProjectRooms,
+    notifyProjectRooms: projectRoomNotifier.notify,
     resumePeerTaskApproval,
     audit,
   });
@@ -5156,7 +5154,7 @@ async function runStart(): Promise<void> {
               },
               success: result.status === 'ok',
             }).catch(() => {});
-            await notifyBoundProjectRooms(result.projectId, `[#${event.fromNodeId}] delegation ${result.status}: ${result.summary}`);
+            await projectRoomNotifier.notify(result.projectId, `[#${event.fromNodeId}] delegation ${result.status}: ${result.summary}`);
             return;
           }
 
@@ -5189,7 +5187,7 @@ async function runStart(): Promise<void> {
                 : event.fromNodeId;
             const lines = [`[network join] ${who} joined ${event.payload.metadata?.projectSlug ?? event.projectId}`];
             if (snapshot?.summary) lines.push('', snapshot.summary);
-            await notifyBoundProjectRooms(event.projectId, lines.join('\n'));
+            await projectRoomNotifier.notify(event.projectId, lines.join('\n'));
             return;
           }
 
@@ -5252,13 +5250,13 @@ async function runStart(): Promise<void> {
             const patchHint = artifact.kind === 'patch' && pendingApproval
               ? `\nReview in Discord: /patches or /patchapprove ${pendingApproval.approvalId}`
               : '';
-            await notifyBoundProjectRooms(project.projectId, `[#${event.fromNodeId}] synced ${artifact.kind} artifact: ${artifact.name}${patchHint}`);
+            await projectRoomNotifier.notify(project.projectId, `[#${event.fromNodeId}] synced ${artifact.kind} artifact: ${artifact.name}${patchHint}`);
             return;
           }
 
           if (event.type === 'message' && event.payload.text && event.projectId) {
             await buildProjectBackground(event.projectId, `network_message:${event.fromNodeId}`);
-            await notifyBoundProjectRooms(event.projectId, `[#${event.fromNodeId}] ${event.payload.text}`);
+            await projectRoomNotifier.notify(event.projectId, `[#${event.fromNodeId}] ${event.payload.text}`);
           }
         },
       }).catch((err) => {
