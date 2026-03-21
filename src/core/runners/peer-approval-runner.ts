@@ -1,31 +1,13 @@
-import type { Channel } from '../channels/channel.js';
-import type { AgentLoop } from './agent-loop.js';
-import type { AuditLogger } from './audit.js';
-import type { ChannelDeliveryRegistry } from './channel-delivery.js';
-import type { ExecutionContext } from './execution-context.js';
-import type { RetryQueue } from './retry-queue.js';
-import type { Session, SessionManager } from '../gateway/session.js';
-import type { ToolResult } from '../tools/tool.js';
-import type { ToolRegistry } from '../tools/registry.js';
-import type { PeerTaskApproval, PeerTaskApprovalRegistry } from './peer-approvals.js';
-import { AcpxRuntime } from '../acp/runtime.js';
-import { AcpSessionManager } from '../tools/acp-sessions.js';
-import type { AcpRuntimeConfig } from '../acp/config.js';
-import type { ToolCall } from '../providers/provider.js';
-
-export function createAcpRuntimeBundle(acpConfig: AcpRuntimeConfig) {
-  const acpRuntime = new AcpxRuntime(acpConfig);
-  const acpSessionManager = new AcpSessionManager(acpConfig, acpRuntime);
-
-  return {
-    acpRuntime,
-    acpSessionManager,
-    async probe(): Promise<boolean> {
-      await acpRuntime.probeAvailability();
-      return acpRuntime.isHealthy();
-    },
-  };
-}
+import type { Channel } from '../../channels/channel.js';
+import type { AgentLoop } from '../agent-loop.js';
+import type { AuditLogger } from '../audit.js';
+import type { ChannelDeliveryRegistry } from '../channel-delivery.js';
+import type { ExecutionContext } from '../execution-context.js';
+import type { Session, SessionManager } from '../../gateway/session.js';
+import type { ToolResult } from '../../tools/tool.js';
+import type { ToolRegistry } from '../../tools/registry.js';
+import type { PeerTaskApproval, PeerTaskApprovalRegistry } from '../peer-approvals.js';
+import type { ToolCall } from '../../providers/provider.js';
 
 interface PeerTaskRunnerDeps {
   sessions: SessionManager;
@@ -305,27 +287,9 @@ export function createPeerTaskRuntimeHandlers(deps: PeerTaskRunnerDeps) {
   }
 
   return {
-    summarizePeerTaskArgs,
-    buildPeerTaskResumePrompt,
     resumePeerTaskApproval,
     handleSharedAccessToolAuthorization,
   };
-}
-
-export function configureRetryRunner(input: {
-  retryQueue: RetryQueue;
-  sessions: SessionManager;
-  runSession: (session: Session, userMessage: string) => AsyncIterable<string>;
-}): void {
-  input.retryQueue.setRunner(async (sessionId, userMessage) => {
-    const session = input.sessions.get(sessionId);
-    if (!session) throw new Error(`Session ${sessionId} not found for retry`);
-    let result = '';
-    for await (const chunk of input.runSession(session, userMessage)) {
-      result += chunk;
-    }
-    return result;
-  });
 }
 
 function isSharedReadonlySafeToolCall(toolCall: ToolCall): boolean {

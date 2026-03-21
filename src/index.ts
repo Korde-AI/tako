@@ -74,8 +74,8 @@ import { createMemoryTools } from './tools/memory.js';
 import { createSessionTools } from './tools/session.js';
 import { createBrowserTools } from './tools/browser.js';
 import { SkillLoader } from './skills/loader.js';
-import { loadChannelFromSkill } from './skills/channel-loader.js';
 import { buildAgentSkillLoader, initializeSkillRuntime } from './skills/runtime-loader.js';
+import { loadSkillRuntimeExtensions } from './skills/runtime-extensions.js';
 import { bootstrapWorkspace, ensureDailyMemory } from './core/bootstrap.js';
 import { Doctor } from './doctor/doctor.js';
 import { checkConfig } from './doctor/checks/config.js';
@@ -131,9 +131,6 @@ import { setExecCacheManager } from './tools/exec.js';
 import { setImageProvider } from './tools/image.js';
 import { createProjectTools, type ProjectBootstrapRequest, type ProjectMemberManageRequest, type ProjectSyncRequest, type ProjectCloseRequest, type ProjectNetworkManageRequest } from './tools/projects.js';
 import { runSymphony } from './cli/symphony.js';
-import { ExtensionRegistry } from './skills/extension-registry.js';
-import { loadExtension, getSkillsWithExtension } from './skills/extension-loader.js';
-import type { NetworkAdapter } from './skills/extensions.js';
 import { getRuntimePaths, setRuntimePaths } from './core/paths.js';
 import { parseNodeMode, type NodeMode } from './core/runtime-mode.js';
 import { startHubServer } from './hub/server.js';
@@ -174,7 +171,9 @@ import { createProjectRoomNotifier } from './projects/room-notifier.js';
 import { registerKernelToolPacks, registerRuntimeToolPacks, registerSurfaceToolPacks, registerCronToolPack } from './core/tool-composition.js';
 import { ChannelDeliveryRegistry } from './core/channel-delivery.js';
 import { createApprovalActionResolver } from './core/approval-actions.js';
-import { configureRetryRunner, createAcpRuntimeBundle, createPeerTaskRuntimeHandlers } from './core/runtime-runners.js';
+import { createAcpRuntimeBundle } from './core/runners/acp-runner.js';
+import { createPeerTaskRuntimeHandlers } from './core/runners/peer-approval-runner.js';
+import { configureRetryRunner } from './core/runners/retry-runner.js';
 import { SharedSessionRegistry, type SharedSession } from './sessions/shared.js';
 import {
   createHubClientFromConfig,
@@ -4460,63 +4459,18 @@ async function runStart(): Promise<void> {
     audit,
   });
 
-  // ─── Skill-provided channels ─────────────────────────────────────
-  // Load and register channels provided by skills (plugin pattern).
+  // ─── Skill runtime extensions ─────────────────────────────────────
   const loadedSkills = skillLoader.getAll();
-  for (const skill of loadedSkills) {
-    if (skill.manifest.hasChannel) {
-      const channelConfig = config.skillChannels?.[skill.manifest.name] ?? {};
-      const channel = await loadChannelFromSkill(skill, channelConfig);
-      if (channel) {
-        channels.push(channel);
-        wireChannel(channel);
-        console.log(`[tako] Loaded skill channel: ${channel.id} (from skill: ${skill.manifest.name})`);
-      }
-    }
-  }
-
-  // ─── Skill extensions (unified subsystem plugins) ──────────────────
-  const extensionRegistry = new ExtensionRegistry();
-
-  // Load provider extensions
-  for (const skill of getSkillsWithExtension(loadedSkills, 'provider')) {
-    const providerConfig = config.skillExtensions?.[skill.manifest.name]?.provider ?? {};
-    const provider = await loadExtension<import('./providers/provider.js').Provider>(skill, 'provider', providerConfig);
-    if (provider) {
-      extensionRegistry.register('provider', skill.manifest.name, provider);
-    }
-  }
-
-  // Load memory extensions
-  for (const skill of getSkillsWithExtension(loadedSkills, 'memory')) {
-    const memConfig = config.skillExtensions?.[skill.manifest.name]?.memory ?? {};
-    const memStore = await loadExtension<import('./memory/store.js').MemoryStore>(skill, 'memory', memConfig);
-    if (memStore) {
-      extensionRegistry.register('memory', skill.manifest.name, memStore);
-    }
-  }
-
-  // Load channel extensions (via unified loader — supplements legacy hasChannel)
-  for (const skill of getSkillsWithExtension(loadedSkills, 'channel')) {
-    if (skill.manifest.hasChannel) continue; // Already loaded above via legacy path
-    const chConfig = config.skillExtensions?.[skill.manifest.name]?.channel ?? {};
-    const channel = await loadExtension<Channel>(skill, 'channel', chConfig);
-    if (channel) {
-      extensionRegistry.register('channel', skill.manifest.name, channel);
+  const extensionRegistry = await loadSkillRuntimeExtensions({
+    loadedSkills,
+    skillChannelsConfig: config.skillChannels,
+    skillExtensionsConfig: config.skillExtensions,
+    registerChannel: (channel, source) => {
       channels.push(channel);
       wireChannel(channel);
-      console.log(`[tako] Loaded extension channel: ${channel.id} (from skill: ${skill.manifest.name})`);
-    }
-  }
-
-  // Load network extensions
-  for (const skill of getSkillsWithExtension(loadedSkills, 'network')) {
-    const netConfig = config.skillExtensions?.[skill.manifest.name]?.network ?? {};
-    const adapter = await loadExtension<NetworkAdapter>(skill, 'network', netConfig);
-    if (adapter) {
-      extensionRegistry.register('network', skill.manifest.name, adapter);
-    }
-  }
+      console.log(`[tako] Loaded ${source}: ${channel.id}`);
+    },
+  });
 
   const channelSurfaceResolvers = createChannelSurfaceResolvers({
     channels,
