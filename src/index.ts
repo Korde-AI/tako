@@ -40,7 +40,9 @@ import { DiscordChannel } from './channels/discord.js';
 import { createDiscordProjectCoordinator } from './channels/discord-project-coordinator.js';
 import { createDiscordDeliveryAdapter } from './channels/discord-delivery-adapter.js';
 import { wireAgentDiscordRuntime, wireMainDiscordRuntime } from './channels/discord-runtime.js';
+import { createChannelSurfaceResolvers } from './channels/surface-resolution.js';
 import { TelegramChannel } from './channels/telegram.js';
+import { createTelegramCommandHandler, wireTelegramRuntime } from './channels/telegram-runtime.js';
 import { AnthropicProvider } from './providers/anthropic.js';
 import { OpenAIProvider } from './providers/openai.js';
 import { LiteLLMProvider } from './providers/litellm.js';
@@ -72,6 +74,7 @@ import { createSessionTools } from './tools/session.js';
 import { createBrowserTools } from './tools/browser.js';
 import { SkillLoader } from './skills/loader.js';
 import { loadChannelFromSkill } from './skills/channel-loader.js';
+import { buildAgentSkillLoader, initializeSkillRuntime } from './skills/runtime-loader.js';
 import { bootstrapWorkspace, ensureDailyMemory } from './core/bootstrap.js';
 import { Doctor } from './doctor/doctor.js';
 import { checkConfig } from './doctor/checks/config.js';
@@ -2811,22 +2814,11 @@ async function runStart(): Promise<void> {
   await sessions.enablePersistence(agentSessionDirs);
 
   // Load skills — dirs come from config (already resolved/expanded)
-  const skillLoader = new SkillLoader(config.skills.dirs);
-  const skillManifests = await skillLoader.discover();
-  for (const manifest of skillManifests) {
-    const loaded = await skillLoader.load(manifest);
-    skillLoader.registerTools(loaded, toolRegistry);
-    skillLoader.registerHooks(loaded, hooks);
-    promptBuilder.addSkillInstructions(loaded.instructions);
-  }
-
-  // Hot reload — re-register tools and hooks on skill changes
-  skillLoader.startWatching(async (reloadedSkills) => {
-    for (const skill of reloadedSkills) {
-      skillLoader.registerTools(skill, toolRegistry);
-      skillLoader.registerHooks(skill, hooks);
-    }
-    console.log(`[tako] Skills reloaded: ${reloadedSkills.length} skills`);
+  const { skillLoader, skillManifests } = await initializeSkillRuntime({
+    skillDirs: config.skills.dirs,
+    toolRegistry,
+    hooks,
+    addSkillInstructions: (instructions) => promptBuilder.addSkillInstructions(instructions),
   });
 
   // Retry queue for failed messages (all fallbacks exhausted)
@@ -3164,18 +3156,15 @@ async function runStart(): Promise<void> {
     const agentModel = agent.model ?? config.providers.primary;
 
     // Build per-agent skill loader when agent has extra skill dirs
-    let agentSkillLoader = skillLoader;
-    if (agent.skills?.dirs && agent.skills.dirs.length > 0) {
-      const agentSkillDirs = [...config.skills.dirs, ...agent.skills.dirs];
-      agentSkillLoader = new SkillLoader(agentSkillDirs);
-      const agentSkillManifests = await agentSkillLoader.discover();
-      for (const manifest of agentSkillManifests) {
-        const loaded = await agentSkillLoader.load(manifest);
-        agentSkillLoader.registerTools(loaded, toolRegistry);
-        agentSkillLoader.registerHooks(loaded, hooks);
-      }
-      console.log(`[tako] Agent "${agent.id}" using ${agentSkillDirs.length} skill dir(s)`);
-    }
+    const agentSkillLoader = await buildAgentSkillLoader({
+      baseSkillLoader: skillLoader,
+      baseSkillDirs: config.skills.dirs,
+      extraSkillDirs: agent.skills?.dirs,
+      toolRegistry,
+      hooks,
+      agentId: agent.id,
+      log: (message) => console.log(message),
+    });
 
     const loop = new AgentLoop(
       {
@@ -4661,82 +4650,27 @@ async function runStart(): Promise<void> {
       allowedUsers: config.channels.telegram.allowedUsers,
     });
 
-    // Register native Telegram command handlers
-    telegramChannel.setCommands(nativeCommandList, async (commandName, chatId, author) => {
-      const principal = await principalRegistry.getOrCreateHuman({
-        displayName: author.name,
-        platform: 'telegram',
-        platformUserId: author.id,
-        username: typeof author.meta?.username === 'string' ? author.meta.username : undefined,
-        metadata: { channelId: `telegram:${chatId}` },
-      });
-      const channelKey = `telegram:${chatId}`;
-      const agentId = resolveAgentForChannel(agentRegistry.list(), 'telegram', chatId);
-      const resolvedProject = resolveProject({
-        platform: 'telegram',
-        channelTarget: chatId,
-        agentId,
-      });
-      const projectRole = resolvedProject
-        ? getProjectRole(projectMemberships, resolvedProject.project.projectId, principal.principalId) ?? undefined
-        : undefined;
-      const accessMetadata = await buildAgentAccessMetadata({
-        platform: 'telegram',
-        agentId,
-        authorId: author.id,
-        principalId: principal.principalId,
-        project: resolvedProject?.project ?? null,
-        metadata: { ...(author.meta ?? {}) },
-      });
-      const sessionKey = `agent:${agentId}:${channelKey}`;
-      const session = sessions.getOrCreate(sessionKey, {
-        name: `${agentId}/${channelKey}/${author.name}`,
-        metadata: toSessionMetadata(buildInboundExecutionContext({
-          agentId,
-          principal,
-          authorId: author.id,
-          authorName: author.name,
-          platform: 'telegram',
-          channelId: channelKey,
-          channelTarget: chatId,
-          project: resolvedProject?.project ?? null,
-          projectRole: projectRole ?? null,
-          metadata: accessMetadata,
-        })),
-      });
-      let executionContext = buildInboundExecutionContext({
-        agentId,
-        sessionId: session.id,
-        principal,
-        authorId: author.id,
-        authorName: author.name,
-        platform: 'telegram',
-        channelId: channelKey,
-        channelTarget: chatId,
-        project: resolvedProject?.project ?? null,
-        projectRole: projectRole ?? null,
-        metadata: accessMetadata,
-      });
-      const shared = await ensureSharedSession({ session, ctx: executionContext });
-      if (shared) {
-        executionContext = {
-          ...executionContext,
-          sharedSessionId: shared.sharedSessionId,
-          ownerPrincipalId: shared.ownerPrincipalId,
-          participantIds: shared.participantIds,
-          activeParticipantIds: shared.activeParticipantIds,
-        };
-      }
-      applyExecutionContextToSession(session, executionContext, telegramChannel ?? undefined);
-
-      if (resolvedProject && !isProjectMember(projectMemberships, resolvedProject.project.projectId, principal.principalId)) {
-        return 'You are not a member of this project.';
-      }
-
-      return commandRegistry.handle('/' + commandName, {
-        ...toCommandContext(executionContext),
-        session,
-      });
+    wireTelegramRuntime({
+      channel: telegramChannel,
+      nativeCommandList,
+      commandHandler: createTelegramCommandHandler({
+        agentId: 'main',
+        channel: telegramChannel,
+        deps: {
+          principalRegistry,
+          sessions,
+          commandRegistry,
+          resolveProject,
+          getProjectRole: (projectId, principalId) => getProjectRole(projectMemberships, projectId, principalId),
+          buildAgentAccessMetadata,
+          buildInboundExecutionContext,
+          toSessionMetadata,
+          ensureSharedSession,
+          applyExecutionContextToSession,
+          toCommandContext,
+          isProjectMember: (projectId, principalId) => isProjectMember(projectMemberships, projectId, principalId),
+        },
+      }),
     });
 
     channels.push(telegramChannel);
@@ -4802,73 +4736,27 @@ async function runStart(): Promise<void> {
       });
       agentTelegram.agentId = agent.id;
 
-      // Register commands for this agent's Telegram bot
-      agentTelegram.setCommands(nativeCommandList, async (commandName, chatId, author) => {
-        const principal = await principalRegistry.getOrCreateHuman({
-          displayName: author.name,
-          platform: 'telegram',
-          platformUserId: author.id,
-          username: typeof author.meta?.username === 'string' ? author.meta.username : undefined,
-          metadata: { channelId: `telegram:${chatId}` },
-        });
-        const channelKey = `telegram:${chatId}`;
-        const resolvedProject = resolveProject({
-          platform: 'telegram',
-          channelTarget: chatId,
+      wireTelegramRuntime({
+        channel: agentTelegram,
+        nativeCommandList,
+        commandHandler: createTelegramCommandHandler({
           agentId: agent.id,
-        });
-        const projectRole = resolvedProject
-          ? getProjectRole(projectMemberships, resolvedProject.project.projectId, principal.principalId) ?? undefined
-          : undefined;
-        const sessionKey = `agent:${agent.id}:${channelKey}`;
-        const session = sessions.getOrCreate(sessionKey, {
-          name: `${agent.id}/${channelKey}/${author.name}`,
-          metadata: toSessionMetadata(buildInboundExecutionContext({
-            agentId: agent.id,
-            principal,
-            authorId: author.id,
-            authorName: author.name,
-            platform: 'telegram',
-            channelId: channelKey,
-            channelTarget: chatId,
-            project: resolvedProject?.project ?? null,
-            projectRole: projectRole ?? null,
-            metadata: { ...(author.meta ?? {}) },
-          })),
-        });
-        let executionContext = buildInboundExecutionContext({
-          agentId: agent.id,
-          sessionId: session.id,
-          principal,
-          authorId: author.id,
-          authorName: author.name,
-          platform: 'telegram',
-          channelId: channelKey,
-          channelTarget: chatId,
-          project: resolvedProject?.project ?? null,
-          projectRole: projectRole ?? null,
-          metadata: { ...(author.meta ?? {}) },
-        });
-        const shared = await ensureSharedSession({ session, ctx: executionContext });
-        if (shared) {
-          executionContext = {
-            ...executionContext,
-            sharedSessionId: shared.sharedSessionId,
-            ownerPrincipalId: shared.ownerPrincipalId,
-            participantIds: shared.participantIds,
-            activeParticipantIds: shared.activeParticipantIds,
-          };
-        }
-        applyExecutionContextToSession(session, executionContext, agentTelegram);
-
-        if (resolvedProject && !isProjectMember(projectMemberships, resolvedProject.project.projectId, principal.principalId)) {
-          return 'You are not a member of this project.';
-        }
-
-        return commandRegistry.handle('/' + commandName, {
-          ...toCommandContext(executionContext),
-          session,
-        });
+          channel: agentTelegram,
+          deps: {
+            principalRegistry,
+            sessions,
+            commandRegistry,
+            resolveProject,
+            getProjectRole: (projectId, principalId) => getProjectRole(projectMemberships, projectId, principalId),
+            buildAgentAccessMetadata,
+            buildInboundExecutionContext,
+            toSessionMetadata,
+            ensureSharedSession,
+            applyExecutionContextToSession,
+            toCommandContext,
+            isProjectMember: (projectId, principalId) => isProjectMember(projectMemberships, projectId, principalId),
+          },
+        }),
       });
 
       channels.push(agentTelegram);
@@ -4964,22 +4852,18 @@ async function runStart(): Promise<void> {
     }
   }
 
+  const channelSurfaceResolvers = createChannelSurfaceResolvers({
+    channels,
+    discordChannels,
+    discordFallback: discordChannel,
+    telegramFallback: telegramChannel,
+  });
+
   registerSurfaceToolPacks({
     toolRegistry,
     messageTools: {
-      resolveDiscord: (agentId?: string) => {
-        if (agentId) {
-          const agentCh = discordChannels.find((ch) => ch.agentId === agentId);
-          if (agentCh) return agentCh;
-        }
-        return discordChannel;
-      },
-      resolveTelegram: (agentId?: string) => {
-        const agentTgChannel = channels.find(
-          (ch) => ch.id === 'telegram' && (ch as { agentId?: string }).agentId === agentId,
-        ) as TelegramChannel | undefined;
-        return agentTgChannel ?? telegramChannel;
-      },
+      resolveDiscord: channelSurfaceResolvers.resolveDiscord,
+      resolveTelegram: channelSurfaceResolvers.resolveTelegram,
     },
     introspectTools: {
       config,
