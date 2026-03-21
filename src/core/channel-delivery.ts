@@ -24,10 +24,31 @@ export interface PeerTaskApprovalNotice {
   projectSlug?: string;
 }
 
+export type ChannelApprovalAction =
+  | {
+      handled: true;
+      kind: 'patch';
+      decision: 'approved' | 'denied';
+      projectId: string;
+      approvalId: string;
+    }
+  | {
+      handled: true;
+      kind: 'peer';
+      decision: 'approved' | 'denied';
+      approvalId: string;
+    }
+  | {
+      handled: true;
+      kind: 'malformed';
+      message: string;
+    };
+
 export interface ChannelDeliveryAdapter {
   readonly platform: ProjectBinding['platform'];
   sendPatchApproval(bindings: ProjectBinding[], input: PatchApprovalNotice): Promise<void>;
   sendPeerTaskApproval(input: PeerTaskApprovalNotice & { agentIdHint?: string }): Promise<void>;
+  parseApprovalAction?(customId: string): ChannelApprovalAction | null;
 }
 
 export class ChannelDeliveryRegistry {

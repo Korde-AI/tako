@@ -1,5 +1,5 @@
 import type { DiscordChannel } from './discord.js';
-import type { ChannelDeliveryAdapter, PatchApprovalNotice, PeerTaskApprovalNotice } from '../core/channel-delivery.js';
+import type { ChannelApprovalAction, ChannelDeliveryAdapter, PatchApprovalNotice, PeerTaskApprovalNotice } from '../core/channel-delivery.js';
 import type { ProjectBinding } from '../projects/types.js';
 
 interface DiscordDeliveryAdapterDeps {
@@ -20,6 +20,35 @@ export function createDiscordDeliveryAdapter(
 
   return {
     platform: 'discord',
+
+    parseApprovalAction(customId: string): ChannelApprovalAction | null {
+      if (customId.startsWith('patchapprove:') || customId.startsWith('patchdeny:')) {
+        const [action, projectId, approvalId] = customId.split(':');
+        if (!projectId || !approvalId) {
+          return { handled: true, kind: 'malformed', message: 'Malformed patch approval action.' };
+        }
+        return {
+          handled: true,
+          kind: 'patch',
+          decision: action === 'patchapprove' ? 'approved' : 'denied',
+          projectId,
+          approvalId,
+        };
+      }
+      if (customId.startsWith('peerapprove:') || customId.startsWith('peerdeny:')) {
+        const [action, approvalId] = customId.split(':');
+        if (!approvalId) {
+          return { handled: true, kind: 'malformed', message: 'Malformed peer approval action.' };
+        }
+        return {
+          handled: true,
+          kind: 'peer',
+          decision: action === 'peerapprove' ? 'approved' : 'denied',
+          approvalId,
+        };
+      }
+      return null;
+    },
 
     async sendPatchApproval(bindings: ProjectBinding[], input: PatchApprovalNotice): Promise<void> {
       for (const binding of bindings) {

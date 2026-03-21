@@ -169,6 +169,7 @@ import { ProjectChannelCoordinatorRegistry } from './projects/channel-coordinati
 import { createProjectRoomLifecycle } from './projects/room-lifecycle.js';
 import { registerKernelToolPacks, registerRuntimeToolPacks, registerSurfaceToolPacks, registerCronToolPack } from './core/tool-composition.js';
 import { ChannelDeliveryRegistry } from './core/channel-delivery.js';
+import { createApprovalActionResolver } from './core/approval-actions.js';
 import { SharedSessionRegistry, type SharedSession } from './sessions/shared.js';
 import {
   createHubClientFromConfig,
@@ -844,7 +845,7 @@ async function runStart(): Promise<void> {
     return { projectRoot, worktreeRoot, created };
   };
 
-  const notifyBoundDiscordChannels = async (projectId: string, content: string): Promise<void> => {
+  const notifyBoundProjectRooms = async (projectId: string, content: string): Promise<void> => {
     const bindings = projectBindings.list().filter((binding) => binding.projectId === projectId);
     if (bindings.length === 0) return;
     const bindingsByPlatform = new Map<string, typeof bindings>();
@@ -1075,7 +1076,7 @@ async function runStart(): Promise<void> {
     const who = input.principalName ?? input.principalId;
     const mention = input.platformUserId ? `<@${input.platformUserId}>` : who;
     const summaryLine = background?.summary.split('\n')[0] ?? `Project ${input.project.displayName} (${input.project.slug})`;
-    await notifyBoundDiscordChannels(
+    await notifyBoundProjectRooms(
       input.project.projectId,
       formatProjectWelcomeNotice({
         mention,
@@ -1112,7 +1113,7 @@ async function runStart(): Promise<void> {
       who: input.principalName ?? input.principalId,
       summary: signal.summary,
     });
-    await notifyBoundDiscordChannels(input.project.projectId, notice);
+    await notifyBoundProjectRooms(input.project.projectId, notice);
 
     if (hubClient && nodeIdentity) {
       await syncProjectToHub(hubClient, nodeIdentity, projectRegistry.get(input.project.projectId) ?? input.project, projectMemberships).catch(() => {});
@@ -1584,7 +1585,7 @@ async function runStart(): Promise<void> {
       if (hubClient && nodeIdentity) {
         await syncProjectMembershipsToHub(hubClient, nodeIdentity, project.projectId, projectMemberships).catch(() => {});
       }
-      await notifyBoundDiscordChannels(
+      await notifyBoundProjectRooms(
         project.projectId,
         `🧹 ${resolved.displayName} was removed from ${project.slug}.`,
       );
@@ -1615,7 +1616,7 @@ async function runStart(): Promise<void> {
     if (hubClient && nodeIdentity) {
       await syncProjectMembershipsToHub(hubClient, nodeIdentity, project.projectId, projectMemberships).catch(() => {});
     }
-    await notifyBoundDiscordChannels(
+    await notifyBoundProjectRooms(
       project.projectId,
       `🎉 ${resolved.displayName} joined ${project.slug} as ${role}.`,
     );
@@ -1682,7 +1683,7 @@ async function runStart(): Promise<void> {
       canWriteSharedState ? `[sync] ${summaryLine}` : `[shared sync] ${summaryLine}`,
       update ? `Update: ${update}` : null,
     ].filter(Boolean).join('\n');
-    await notifyBoundDiscordChannels(project.projectId, announce);
+    await notifyBoundProjectRooms(project.projectId, announce);
 
     return {
       output: [
@@ -1756,7 +1757,7 @@ async function runStart(): Promise<void> {
     await writeFile(statusPath, `${prior.trimEnd()}\n${closureBlock}\n`, 'utf-8');
 
     const background = await buildProjectBackground(project.projectId, 'project_close');
-    await notifyBoundDiscordChannels(
+    await notifyBoundProjectRooms(
       project.projectId,
       [
         `[project closed] ${updated.displayName} (${updated.slug})`,
@@ -2580,7 +2581,7 @@ async function runStart(): Promise<void> {
         && isProjectMember(projectMemberships, shared.projectId, input.ctx.principalId);
       if (collaborativeProject?.collaboration?.announceJoins !== false && !suppressLocalDiscordJoinNotice) {
         const who = input.ctx.principalName ?? input.ctx.authorName ?? input.ctx.principalId;
-        await notifyBoundDiscordChannels(shared.projectId, formatSharedSessionJoinNotice({
+        await notifyBoundProjectRooms(shared.projectId, formatSharedSessionJoinNotice({
           displayName: who,
           projectSlug: collaborativeProject?.slug ?? shared.projectId,
           snapshotSummary: snapshot?.summary,
@@ -3376,7 +3377,7 @@ async function runStart(): Promise<void> {
       const registry = new ProjectApprovalRegistry(projectApprovalsRoot(runtimePaths, projectId), projectId);
       await registry.load();
       const resolved = await registry.resolve(approvalId, decision, reviewedByPrincipalId, reason);
-      await notifyBoundDiscordChannels(projectId, `[patch ${decision}] ${resolved.artifactName} (${resolved.approvalId})`);
+      await notifyBoundProjectRooms(projectId, `[patch ${decision}] ${resolved.artifactName} (${resolved.approvalId})`);
       return {
         approvalId: resolved.approvalId,
         artifactName: resolved.artifactName,
@@ -4615,100 +4616,30 @@ async function runStart(): Promise<void> {
         await handleChannelTypeButton(interaction);
         return true;
       }
-      if (interaction.customId.startsWith('patchapprove:') || interaction.customId.startsWith('patchdeny:')) {
-        const [action, projectId, approvalId] = interaction.customId.split(':');
-        if (!projectId || !approvalId) {
-          await interaction.reply({ content: 'Malformed patch approval action.', flags: 64 }).catch(() => {});
-          return true;
-        }
+      const deliveryAdapter = channelDeliveryRegistry.get('discord');
+      const approvalAction = deliveryAdapter?.parseApprovalAction?.(interaction.customId) ?? null;
+      if (approvalAction) {
         const principal = await principalRegistry.getOrCreateHuman({
           displayName: interaction.user.displayName || interaction.user.username,
           platform: 'discord',
           platformUserId: interaction.user.id,
         });
-        const approvals = new ProjectApprovalRegistry(projectApprovalsRoot(runtimePaths, projectId), projectId);
-        await approvals.load();
-        const existing = approvals.get(approvalId);
-        if (!existing) {
-          await interaction.reply({ content: `Approval not found: ${approvalId}`, flags: 64 }).catch(() => {});
+        const result = await approvalActionResolver.resolve(approvalAction, {
+          displayName: principal.displayName,
+          principalId: principal.principalId,
+          userId: interaction.user.id,
+        }, interaction.message.content);
+        if (!result.handled) return false;
+        if ('reply' in result) {
+          await interaction.reply({ content: result.reply, flags: 64 }).catch(() => {});
           return true;
         }
-        const resolved = await approvals.resolve(
-          approvalId,
-          action === 'patchapprove' ? 'approved' : 'denied',
-          principal.principalId,
-          `Resolved in Discord by ${principal.displayName}`,
-        );
         await interaction.update({
-          content: `${interaction.message.content}\n\nResolved: **${resolved.status}** by ${principal.displayName}`,
+          content: result.updateMessage,
           components: [],
         }).catch(async () => {
-          await interaction.reply({ content: `Resolved ${resolved.artifactName}: ${resolved.status}`, flags: 64 }).catch(() => {});
+          await interaction.reply({ content: result.fallbackReply, flags: 64 }).catch(() => {});
         });
-        await notifyBoundDiscordChannels(projectId, `[patch ${resolved.status}] ${resolved.artifactName} (${resolved.approvalId}) by ${principal.displayName}`);
-        return true;
-      }
-      if (interaction.customId.startsWith('peerapprove:') || interaction.customId.startsWith('peerdeny:')) {
-        const [action, approvalId] = interaction.customId.split(':');
-        if (!approvalId) {
-          await interaction.reply({ content: 'Malformed peer approval action.', flags: 64 }).catch(() => {});
-          return true;
-        }
-        const principal = await principalRegistry.getOrCreateHuman({
-          displayName: interaction.user.displayName || interaction.user.username,
-          platform: 'discord',
-          platformUserId: interaction.user.id,
-        });
-        const existing = peerTaskApprovals.get(approvalId);
-        if (!existing) {
-          await interaction.reply({ content: `Approval not found: ${approvalId}`, flags: 64 }).catch(() => {});
-          return true;
-        }
-        const ownerAllowed = existing.ownerUserIds.includes(interaction.user.id)
-          || (principal.principalId ? existing.ownerPrincipalIds.includes(principal.principalId) : false);
-        if (!ownerAllowed) {
-          await interaction.reply({ content: 'Only the owning human can approve this task.', flags: 64 }).catch(() => {});
-          return true;
-        }
-        if (existing.status !== 'pending') {
-          await interaction.reply({ content: `Approval ${approvalId} is already ${existing.status}.`, flags: 64 }).catch(() => {});
-          return true;
-        }
-        const resolved = await peerTaskApprovals.resolve(
-          approvalId,
-          action === 'peerapprove' ? 'approved' : 'denied',
-          {
-            reviewedByPrincipalId: principal.principalId,
-            reviewedByUserId: interaction.user.id,
-            decisionReason: `Resolved in Discord by ${principal.displayName}`,
-          },
-        );
-        await interaction.update({
-          content: `${interaction.message.content}\n\nResolved: **${resolved.status}** by ${principal.displayName}`,
-          components: [],
-        }).catch(async () => {
-          await interaction.reply({ content: `Resolved peer task ${resolved.approvalId}: ${resolved.status}`, flags: 64 }).catch(() => {});
-        });
-        audit.log({
-          agentId: resolved.agentId,
-          sessionId: resolved.sessionId,
-          principalId: resolved.requesterPrincipalId,
-          principalName: resolved.requesterPrincipalName,
-          projectId: resolved.projectId,
-          projectSlug: resolved.projectSlug,
-          event: 'agent_comms',
-          action: resolved.status === 'approved' ? 'peer_task_approval_approved' : 'peer_task_approval_denied',
-          details: {
-            approvalId: resolved.approvalId,
-            toolName: resolved.toolName,
-            reviewedByPrincipalId: principal.principalId,
-            reviewedByUserId: interaction.user.id,
-          },
-          success: resolved.status === 'approved',
-        }).catch(() => {});
-        if (resolved.status === 'approved') {
-          await resumePeerTaskApproval(resolved);
-        }
         return true;
       }
       return false;
@@ -4968,6 +4899,15 @@ async function runStart(): Promise<void> {
     autoEnrollProjectRoomParticipant,
   });
 
+  const approvalActionResolver = createApprovalActionResolver({
+    peerTaskApprovals,
+    createProjectApprovalRegistry: (projectId) =>
+      new ProjectApprovalRegistry(projectApprovalsRoot(runtimePaths, projectId), projectId),
+    notifyProjectRooms: notifyBoundProjectRooms,
+    resumePeerTaskApproval,
+    audit,
+  });
+
   // ─── Skill-provided channels ─────────────────────────────────────
   // Load and register channels provided by skills (plugin pattern).
   const loadedSkills = skillLoader.getAll();
@@ -5216,7 +5156,7 @@ async function runStart(): Promise<void> {
               },
               success: result.status === 'ok',
             }).catch(() => {});
-            await notifyBoundDiscordChannels(result.projectId, `[#${event.fromNodeId}] delegation ${result.status}: ${result.summary}`);
+            await notifyBoundProjectRooms(result.projectId, `[#${event.fromNodeId}] delegation ${result.status}: ${result.summary}`);
             return;
           }
 
@@ -5249,7 +5189,7 @@ async function runStart(): Promise<void> {
                 : event.fromNodeId;
             const lines = [`[network join] ${who} joined ${event.payload.metadata?.projectSlug ?? event.projectId}`];
             if (snapshot?.summary) lines.push('', snapshot.summary);
-            await notifyBoundDiscordChannels(event.projectId, lines.join('\n'));
+            await notifyBoundProjectRooms(event.projectId, lines.join('\n'));
             return;
           }
 
@@ -5312,13 +5252,13 @@ async function runStart(): Promise<void> {
             const patchHint = artifact.kind === 'patch' && pendingApproval
               ? `\nReview in Discord: /patches or /patchapprove ${pendingApproval.approvalId}`
               : '';
-            await notifyBoundDiscordChannels(project.projectId, `[#${event.fromNodeId}] synced ${artifact.kind} artifact: ${artifact.name}${patchHint}`);
+            await notifyBoundProjectRooms(project.projectId, `[#${event.fromNodeId}] synced ${artifact.kind} artifact: ${artifact.name}${patchHint}`);
             return;
           }
 
           if (event.type === 'message' && event.payload.text && event.projectId) {
             await buildProjectBackground(event.projectId, `network_message:${event.fromNodeId}`);
-            await notifyBoundDiscordChannels(event.projectId, `[#${event.fromNodeId}] ${event.payload.text}`);
+            await notifyBoundProjectRooms(event.projectId, `[#${event.fromNodeId}] ${event.payload.text}`);
           }
         },
       }).catch((err) => {
