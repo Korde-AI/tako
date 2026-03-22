@@ -106,6 +106,8 @@ import { createProjectCoordinationRuntime } from './project-coordination.js';
 import { createApprovalRuntime } from './approval-runtime.js';
 import { startNetworkRuntime } from './network-runtime.js';
 import { createProjectRuntime } from './project-runtime.js';
+import { createEdgeSessionRuntime } from './edge-session-runtime.js';
+import { createEdgeChannelRuntime } from './edge-channel-runtime.js';
 
 const VERSION = '0.0.1';
 
@@ -184,26 +186,6 @@ export async function runEdgeRuntime(): Promise<void> {
   const projectChannelCoordinators = new ProjectChannelCoordinatorRegistry();
   const channelDeliveryRegistry = new ChannelDeliveryRegistry();
 
-  const resolvePrincipal = async (msg: InboundMessage) => {
-    const platform = inferChannelPlatformFromChannelId(msg.channelId, channelPlatforms);
-    const username = typeof msg.author.meta?.username === 'string' ? msg.author.meta.username : undefined;
-    const principal = await principalRegistry.getOrCreateHuman({
-      displayName: msg.author.name,
-      platform,
-      platformUserId: msg.author.id,
-      username,
-      metadata: {
-        channelId: msg.channelId,
-      },
-    });
-    msg.author.principalId = principal.principalId;
-    msg.author.meta = {
-      ...msg.author.meta,
-      principalId: principal.principalId,
-      principalName: principal.displayName,
-    };
-    return principal;
-  };
   const peerAgentLoopWindow = new Map<string, number[]>();
   const shouldThrottlePeerAgentMessage = (input: {
     targetAgentId: string;
@@ -269,135 +251,57 @@ export async function runEdgeRuntime(): Promise<void> {
     getAgentBaseRole: (agentId) => getAgentBaseRole(agentId),
   });
 
-  const buildInboundExecutionContext = (input: {
-    agentId: string;
-    sessionId?: string;
-    principal?: Awaited<ReturnType<typeof principalRegistry.getOrCreateHuman>> | null;
-    authorId: string;
-    authorName: string;
-    platform: ChannelPlatform;
-    channelId: string;
-    channelTarget: string;
-    threadId?: string;
-    project?: Project | null;
-    projectRole?: ProjectRole | null;
-    metadata?: Record<string, unknown>;
-  }): ExecutionContext => {
-    const projectRoot = input.project ? resolveProjectRoot(runtimePaths, input.project) : undefined;
-    return buildExecutionContext({
-      nodeIdentity: getNodeIdentity(),
-      home: runtimePaths.home,
-      agentId: input.agentId,
-      workspaceRoot: config.memory.workspace,
-      projectRoot,
-      allowedToolRoot: projectRoot ?? config.memory.workspace,
-      sessionId: input.sessionId,
-      principal: input.principal,
-      authorId: input.authorId,
-      authorName: input.authorName,
-      platform: input.platform,
-      platformUserId: input.authorId,
-      channelId: input.channelId,
-      channelTarget: input.channelTarget,
-      threadId: input.threadId,
-      project: input.project ?? null,
-      projectRole: input.projectRole ?? null,
-      metadata: input.metadata,
-    });
-  };
-
-  const applyExecutionContextToSession = (session: Session, ctx: ExecutionContext, channel?: Channel): void => {
-    const networkSession = (ctx.sharedSessionId ? networkSharedSessions.findBySharedSessionId(ctx.sharedSessionId) : null)
-      ?? networkSharedSessions.findByLocalSessionId(session.id)
-      ?? (ctx.projectId
-        ? networkSharedSessions.findByProject(ctx.projectId).find((candidate) => candidate.participantNodeIds.includes(getNodeIdentity().nodeId)) ?? null
-        : null);
-    if (networkSession) {
-      void networkSharedSessions.bindLocalSession({
-        networkSessionId: networkSession.networkSessionId,
-        nodeId: getNodeIdentity().nodeId,
-        localSessionId: session.id,
-        sharedSessionId: ctx.sharedSessionId,
-      }).catch(() => {});
-      ctx.networkSessionId = networkSession.networkSessionId;
-      ctx.hostNodeId = networkSession.hostNodeId;
-      ctx.participantNodeIds = networkSession.participantNodeIds;
-    }
-    Object.assign(session.metadata, toSessionMetadata(ctx), {
-      executionContext: ctx,
-      ...(channel ? { channelRef: channel } : {}),
-    });
-  };
-
-  const ensureSharedSession = async (input: {
-    session: Session;
-    ctx: ExecutionContext;
-  }): Promise<SharedSession | null> => {
-    if (!input.ctx.projectId || !input.ctx.principalId || !input.ctx.channelTarget || !input.ctx.platform) {
-      return null;
-    }
-
-    let shared = sharedSessionRegistry.findBySessionId(input.session.id);
-    if (!shared) {
-      shared = sharedSessionRegistry.findByBinding({
-        projectId: input.ctx.projectId,
-        platform: input.ctx.platform,
-        channelTarget: input.ctx.channelTarget,
-        threadId: input.ctx.threadId,
-        agentId: input.ctx.agentId,
-      });
-    }
-    const project = projectRegistry.get(input.ctx.projectId);
-    const collaborationMode = project?.collaboration?.mode ?? 'single-user';
-    let participantJoined = false;
-    if (!shared) {
-      if (collaborationMode !== 'collaborative' && (!project || input.ctx.principalId === project.ownerPrincipalId)) {
-        return null;
-      }
-      shared = await sharedSessionRegistry.create({
-        sessionId: input.session.id,
-        agentId: input.ctx.agentId,
-        projectId: input.ctx.projectId,
-        projectSlug: input.ctx.projectSlug,
-        ownerPrincipalId: input.ctx.principalId,
-        initialParticipantId: input.ctx.principalId,
-        binding: {
-          platform: input.ctx.platform,
-          channelId: input.ctx.channelId ?? `${input.ctx.platform}:${input.ctx.channelTarget}`,
-          channelTarget: input.ctx.channelTarget,
-          threadId: input.ctx.threadId,
-        },
-      });
-      audit.log({
-        ...toAuditContext({
-          ...input.ctx,
-          sharedSessionId: shared.sharedSessionId,
-          participantIds: shared.participantIds,
-        }),
-        event: 'session_start',
-        action: 'shared_session_create',
-        details: {
-          ownerPrincipalId: shared.ownerPrincipalId,
-        },
-        success: true,
-      }).catch(() => {});
-      participantJoined = true;
-    } else {
-      participantJoined = !shared.participantIds.includes(input.ctx.principalId);
-      await sharedSessionRegistry.touchParticipant(shared.sharedSessionId, input.ctx.principalId);
-    }
-    if (participantJoined) {
-      await activateCollaborativeProject(input.ctx.projectId, `participant_join:${input.ctx.principalId}`);
-    }
-    shared = await sharedSessionRegistry.setActiveParticipant(shared.sharedSessionId, input.ctx.principalId);
-    if (participantJoined) {
-      const snapshot = await buildProjectBackground(shared.projectId, `participant_join:${input.ctx.principalId}`, shared);
+  // Thread bindings (Discord thread → sub-agent session routing)
+  const { homedir } = await import('node:os');
+  const threadBindings = new ThreadBindingManager(
+    getRuntimePaths().threadBindingsFile,
+  );
+  await threadBindings.load();
+  const {
+    resolvePrincipal,
+    buildInboundExecutionContext,
+    applyExecutionContextToSession,
+    ensureSharedSession,
+    sanitizeSessionMessages,
+    getSession,
+  } = createEdgeSessionRuntime({
+    config,
+    runtimePaths,
+    sessions,
+    principalRegistry,
+    projectRegistry,
+    projectMemberships,
+    sharedSessionRegistry,
+    networkSharedSessions,
+    threadBindings,
+    channelPlatforms,
+    hooks,
+    audit,
+    getNodeIdentity,
+    resolveAgentId: ({ platform, channelTarget, guildId, channelAgentId }) =>
+      channelAgentId ?? resolveAgentForChannel(agentRegistry.list(), platform, channelTarget, guildId),
+    onThreadAcpMessage: async ({ sessionKey, content, channelTarget, channel }) => {
+      if (!sessionKey.includes(':acp:') || !acpRuntime?.isHealthy()) return false;
+      const { handleAcpThreadMessage } = await import('../tools/agent-tools.js');
+      return handleAcpThreadMessage(
+        sessionKey,
+        content,
+        channelTarget,
+        channel as DiscordChannel,
+        acpRuntime,
+      );
+    },
+    onSharedSessionParticipantJoined: async ({ shared, ctx }) => {
+      await activateCollaborativeProject(shared.projectId, `participant_join:${ctx.principalId}`);
+      const snapshot = await buildProjectBackground(shared.projectId, `participant_join:${ctx.principalId}`, shared);
       const collaborativeProject = projectRegistry.get(shared.projectId);
-      const suppressLocalDiscordJoinNotice = input.ctx.platform === 'discord'
-        && isProjectMember(projectMemberships, shared.projectId, input.ctx.principalId);
+      const suppressLocalDiscordJoinNotice = ctx.platform === 'discord'
+        && !!ctx.principalId
+        && isProjectMember(projectMemberships, shared.projectId, ctx.principalId);
       if (collaborativeProject?.collaboration?.announceJoins !== false && !suppressLocalDiscordJoinNotice) {
-        const who = input.ctx.principalName ?? input.ctx.authorName ?? input.ctx.principalId;
-        await projectRoomNotifier.notify(shared.projectId, formatSharedSessionJoinNotice({
+        const who = ctx.principalName ?? ctx.authorName ?? ctx.principalId ?? 'unknown';
+        if (!projectCoordinationRuntime) throw new Error('Project coordination runtime not initialized');
+        await projectCoordinationRuntime.projectRoomNotifier.notify(shared.projectId, formatSharedSessionJoinNotice({
           displayName: who,
           projectSlug: collaborativeProject?.slug ?? shared.projectId,
           snapshotSummary: snapshot?.summary,
@@ -411,32 +315,24 @@ export async function runEdgeRuntime(): Promise<void> {
           networkSessionId: networkSession.networkSessionId,
           projectId: shared.projectId,
           fromNodeId: nodeIdentity.nodeId,
-          fromPrincipalId: input.ctx.principalId,
+          fromPrincipalId: ctx.principalId ?? 'system',
           type: 'join',
           audience: 'specific-nodes',
           targetNodeIds: networkSession.participantNodeIds,
           payload: {
-            summary: `${input.ctx.principalName ?? input.ctx.authorName ?? input.ctx.principalId} joined ${collaborativeProject?.slug ?? shared.projectId}`,
+            summary: `${ctx.principalName ?? ctx.authorName ?? ctx.principalId} joined ${collaborativeProject?.slug ?? shared.projectId}`,
             metadata: {
               joinKind: 'principal_join',
-              participantPrincipalId: input.ctx.principalId,
-              participantPrincipalName: input.ctx.principalName ?? input.ctx.authorName,
+              participantPrincipalId: ctx.principalId,
+              participantPrincipalName: ctx.principalName ?? ctx.authorName,
               projectSlug: collaborativeProject?.slug,
             },
           },
           createdAt: new Date().toISOString(),
         }).catch(() => {});
       }
-    }
-    return shared;
-  };
-
-  // Thread bindings (Discord thread → sub-agent session routing)
-  const { homedir } = await import('node:os');
-  const threadBindings = new ThreadBindingManager(
-    getRuntimePaths().threadBindingsFile,
-  );
-  await threadBindings.load();
+    },
+  });
 
   // Memory
   const embeddingProvider = createEmbeddingProvider(config.memory.embeddings);
@@ -934,701 +830,6 @@ export async function runEdgeRuntime(): Promise<void> {
     },
   });
 
-  // Best-effort repair for malformed persisted messages so one bad entry
-  // never poisons a whole session.
-  function sanitizeSessionMessages(session: Session): number {
-    let fixed = 0;
-    const cleaned: any[] = [];
-    for (const m of session.messages as any[]) {
-      if (!m || typeof m !== 'object') { fixed++; continue; }
-      if (typeof m.role !== 'string') { fixed++; continue; }
-      if (!('content' in m) || m.content == null) {
-        cleaned.push({ ...m, content: '' });
-        fixed++;
-        continue;
-      }
-      cleaned.push(m);
-    }
-    if (fixed > 0) {
-      session.messages = cleaned as any;
-    }
-    return fixed;
-  }
-
-  // ─── Multi-channel routing ────────────────────────────────────────
-
-  async function getSession(
-    msg: InboundMessage,
-    channel?: Channel,
-    resolvedProject?: { project: Project } | null,
-    accessMetadata?: Record<string, unknown>,
-  ): Promise<ReturnType<typeof sessions.getOrCreate> | null> {
-    // If the channel has a bound agentId, use it directly; otherwise resolve from bindings
-    const channelType = msg.channelId.split(':')[0] ?? 'cli';
-    const channelTarget = msg.channelId.includes(':')
-      ? msg.channelId.split(':').slice(1).join(':')
-      : msg.channelId;
-
-    // Check thread bindings first — if this message is in a bound thread,
-    // route to the sub-agent session instead of normal routing.
-    const binding = threadBindings.getBinding(channelTarget);
-    if (binding) {
-      threadBindings.touch(channelTarget);
-
-      // ACP session routing: if bound to an ACP session, route through acpx runtime
-      if (binding.sessionKey.includes(':acp:') && acpRuntime?.isHealthy()) {
-        const { handleAcpThreadMessage } = await import('../tools/agent-tools.js');
-        const discordCh = channel as DiscordChannel;
-        const handled = await handleAcpThreadMessage(
-          binding.sessionKey,
-          msg.content,
-          channelTarget,
-          discordCh,
-          acpRuntime,
-        );
-        if (handled) return null; // Handled by ACP, skip normal routing
-      }
-
-      const session = sessions.getOrCreate(binding.sessionKey, {
-        name: `${binding.agentId}/thread:${channelTarget}`,
-        metadata: {
-          ...toSessionMetadata(buildInboundExecutionContext({
-            agentId: binding.agentId,
-            sessionId: undefined,
-            principal: principalRegistry.get(msg.author.principalId ?? '') ?? null,
-            authorId: msg.author.id,
-            authorName: msg.author.name,
-            platform: channelType as ChannelPlatform,
-            channelId: msg.channelId,
-            channelTarget,
-            project: resolvedProject?.project ?? null,
-            threadId: msg.threadId,
-            metadata: { ...(accessMetadata ?? msg.author.meta ?? {}) },
-          })),
-          threadBinding: true,
-        },
-      });
-      let ctx = buildInboundExecutionContext({
-        agentId: binding.agentId,
-        sessionId: session.id,
-        principal: principalRegistry.get(msg.author.principalId ?? '') ?? null,
-        authorId: msg.author.id,
-        authorName: msg.author.name,
-        platform: channelType as ChannelPlatform,
-        channelId: msg.channelId,
-        channelTarget,
-        project: resolvedProject?.project ?? null,
-        threadId: msg.threadId,
-        metadata: { ...(accessMetadata ?? msg.author.meta ?? {}) },
-      });
-      const shared = await ensureSharedSession({ session, ctx });
-      if (shared) {
-        ctx = {
-          ...ctx,
-          sharedSessionId: shared.sharedSessionId,
-          ownerPrincipalId: shared.ownerPrincipalId,
-          participantIds: shared.participantIds,
-          activeParticipantIds: shared.activeParticipantIds,
-        };
-      }
-      applyExecutionContextToSession(session, ctx, channel);
-      if (session.isNew) {
-        await hooks.emit('session_start', {
-          event: 'session_start',
-          sessionId: session.id,
-        data: {
-          ...toAuditContext(ctx),
-          channelType,
-          channelTarget,
-          authorId: msg.author.id,
-        },
-        timestamp: Date.now(),
-      });
-      }
-      return session;
-    }
-
-    const guildId = msg.author.meta?.guildId as string | undefined;
-    const agentId = channel?.agentId ?? resolveAgentForChannel(agentRegistry.list(), channelType, channelTarget, guildId);
-
-    // Build structured session key matching reference runtime's format:
-    //   agent:<agentId>:<platform>:<type>:<target>
-    let key: string;
-    const chatType = msg.author.meta?.chatType as string | undefined;
-
-    if (channelType === 'discord') {
-      const guildId = msg.author.meta?.guildId;
-      if (guildId) {
-        key = `agent:${agentId}:discord:channel:${channelTarget}`;
-      } else {
-        // No guild = DM
-        key = `agent:${agentId}:discord:dm:${msg.author.id}`;
-      }
-    } else if (channelType === 'telegram') {
-      if (chatType === 'private') {
-        key = `agent:${agentId}:telegram:dm:${channelTarget}`;
-      } else {
-        key = `agent:${agentId}:telegram:group:${channelTarget}`;
-      }
-      // Telegram topic: separate session per forum topic
-      if (msg.threadId) {
-        key += `:topic:${msg.threadId}`;
-      }
-    } else if (channelType === 'cli') {
-      key = `agent:${agentId}:cli:main`;
-    } else {
-      key = `agent:${agentId}:${msg.channelId}`;
-    }
-
-    const session = sessions.getOrCreate(key, {
-      name: `${agentId}/${msg.channelId}/${msg.author.name}`,
-      metadata: {
-        ...toSessionMetadata(buildInboundExecutionContext({
-          agentId,
-          principal: principalRegistry.get(msg.author.principalId ?? '') ?? null,
-          authorId: msg.author.id,
-          authorName: msg.author.name,
-          platform: channelType as ChannelPlatform,
-          channelId: msg.channelId,
-          channelTarget,
-          threadId: msg.threadId,
-          project: resolvedProject?.project ?? null,
-          metadata: { ...(accessMetadata ?? msg.author.meta ?? {}) },
-        })),
-      },
-    });
-    let ctx = buildInboundExecutionContext({
-      agentId,
-      sessionId: session.id,
-      principal: principalRegistry.get(msg.author.principalId ?? '') ?? null,
-      authorId: msg.author.id,
-      authorName: msg.author.name,
-      platform: channelType as ChannelPlatform,
-      channelId: msg.channelId,
-      channelTarget,
-      threadId: msg.threadId,
-      project: resolvedProject?.project ?? null,
-      metadata: { ...(accessMetadata ?? msg.author.meta ?? {}) },
-    });
-    const shared = await ensureSharedSession({ session, ctx });
-    if (shared) {
-      ctx = {
-        ...ctx,
-        sharedSessionId: shared.sharedSessionId,
-        ownerPrincipalId: shared.ownerPrincipalId,
-        participantIds: shared.participantIds,
-        activeParticipantIds: shared.activeParticipantIds,
-      };
-    }
-    applyExecutionContextToSession(session, ctx, channel);
-    if (session.isNew) {
-      await hooks.emit('session_start', {
-        event: 'session_start',
-        sessionId: session.id,
-        data: {
-          ...toAuditContext(ctx),
-          channelType,
-          channelTarget,
-          authorId: msg.author.id,
-        },
-        timestamp: Date.now(),
-      });
-    }
-    return session;
-  }
-
-  function wireChannel(channel: Channel) {
-    deliveryQueue.registerChannel(channel);
-    channel.onMessage(async (msg: InboundMessage) => {
-      try {
-      const principal = await resolvePrincipal(msg);
-      const channelType = inferChannelPlatformFromChannelId(msg.channelId, channelPlatforms, channel.id);
-      const channelTarget = msg.channelId.includes(':')
-        ? msg.channelId.split(':').slice(1).join(':')
-        : msg.channelId;
-      const projectChannelTarget = (msg.author.meta?.parentChannelId as string | undefined) ?? channelTarget;
-      const guildId = msg.author.meta?.guildId as string | undefined;
-      const inboundAgentId = channel.agentId ?? resolveAgentForChannel(agentRegistry.list(), channelType, channelTarget, guildId);
-      const isBotOrigin = msg.author.meta?.isBot === true;
-      if (shouldThrottlePeerAgentMessage({
-        targetAgentId: inboundAgentId,
-        authorId: msg.author.id,
-        channelId: msg.channelId,
-        isBot: isBotOrigin,
-      })) {
-        console.warn(`[discord-peer-loop] throttled bot-authored message agent=${inboundAgentId} author=${msg.author.id} channel=${msg.channelId}`);
-        return;
-      }
-      const resolvedProject = resolveProject({
-        platform: channelType,
-        channelTarget: projectChannelTarget,
-        threadId: msg.threadId,
-        agentId: inboundAgentId,
-      });
-      if (channelType === 'discord') {
-        const discordPolicy = await isDiscordInvocationAllowed({
-          agentId: inboundAgentId,
-          authorId: msg.author.id,
-          authorName: msg.author.name,
-          username: typeof msg.author.meta?.username === 'string' ? msg.author.meta.username : undefined,
-          principalId: principal.principalId,
-          channelName: typeof msg.author.meta?.channelName === 'string' ? msg.author.meta.channelName : undefined,
-          parentChannelName: typeof msg.author.meta?.parentChannelName === 'string' ? msg.author.meta.parentChannelName : undefined,
-          project: resolvedProject?.project ?? null,
-        });
-        if (!discordPolicy.allowed) {
-          console.log(
-            `[discord-auth] blocked message agent=${inboundAgentId} user=${msg.author.id} principal=${principal.principalId} ` +
-            `channel=${msg.channelId} name=${String(msg.author.meta?.channelName ?? '')} ` +
-            `parent=${String(msg.author.meta?.parentChannelName ?? '')} reason=${discordPolicy.reason}`,
-          );
-          return;
-        }
-      }
-      const projectRole = resolvedProject
-        ? getProjectRole(projectMemberships, resolvedProject.project.projectId, principal.principalId) ?? undefined
-        : undefined;
-      const accessMetadata = await buildAgentAccessMetadata({
-        platform: channelType,
-        agentId: inboundAgentId,
-        authorId: msg.author.id,
-        principalId: principal.principalId,
-        project: resolvedProject?.project ?? null,
-        metadata: { ...(msg.author.meta ?? {}) },
-      });
-      const inboundContext = buildInboundExecutionContext({
-        agentId: inboundAgentId,
-        principal,
-        authorId: msg.author.id,
-        authorName: msg.author.name,
-        platform: channelType,
-        channelId: msg.channelId,
-        channelTarget,
-        threadId: msg.threadId,
-        project: resolvedProject?.project ?? null,
-        projectRole: projectRole ?? null,
-        metadata: accessMetadata,
-      });
-      const inboundText = typeof msg.content === 'string' ? msg.content : '';
-      await hooks.emit('message_received', {
-        event: 'message_received',
-        data: {
-          ...toAuditContext(inboundContext),
-          channelId: msg.channelId,
-          authorId: msg.author.id,
-          content: msg.content,
-        },
-        timestamp: Date.now(),
-      });
-
-      if (channel.id === 'cli' && (inboundText === '/quit' || inboundText === '/exit')) {
-        await shutdown();
-        process.exit(0);
-      }
-
-      // ─── AllowFrom ACL check ─────────────────────────────────────
-      const aclAgentId = channel.agentId ?? 'main';
-      const aclChannel = channel.id;
-      if (aclChannel !== 'cli' && aclChannel !== 'tui') {
-        // Always let /claim through — it needs to reach the command registry
-        // even when the bot is unclaimed (open mode) or when the user isn't on the allowlist yet.
-        const isClaimCommand = inboundText.trim().toLowerCase() === '/claim';
-        if (!isClaimCommand) {
-          const allowSharedReadonly = resolvedProject != null;
-          const allowed = allowSharedReadonly
-            ? true
-            : await isUserAllowed(aclChannel, aclAgentId, msg.author.id, principal.principalId);
-          if (!allowed) return; // silently ignore
-        }
-      }
-
-      if (resolvedProject && !isProjectMember(projectMemberships, resolvedProject.project.projectId, principal.principalId)) {
-        const enrolled = await autoEnrollProjectRoomParticipant({
-          project: resolvedProject.project,
-          principalId: principal.principalId,
-          principalName: principal.displayName,
-          platformUserId: msg.author.id,
-          platform: channelType,
-          addedBy: resolvedProject.project.ownerPrincipalId,
-        });
-        if (enrolled) {
-          resolvedProject.project = projectRegistry.get(resolvedProject.project.projectId) ?? resolvedProject.project;
-        } else {
-        audit.log({
-          ...toAuditContext(inboundContext),
-          event: 'permission_denied',
-          action: 'project_membership',
-          details: { channelId: msg.channelId, authorId: msg.author.id },
-          success: false,
-        }).catch(() => {});
-        return;
-        }
-      }
-
-      const session = await getSession(msg, channel, resolvedProject, accessMetadata);
-
-      // ACP thread routing: if getSession returned null, the message was handled by ACP runtime
-      if (!session) return;
-
-      // Update per-message runtime metadata used by typing/reactions/rate-limits
-      const sessionContext = (
-        session.metadata.executionContext as ExecutionContext | undefined
-      ) ?? {
-        ...inboundContext,
-        sessionId: session.id,
-      };
-      applyExecutionContextToSession(session, sessionContext, channel);
-      session.metadata.messageId = msg.id;
-
-      if (resolvedProject && inboundText.trim()) {
-        await sweepProjectRoomSignal({
-          project: resolvedProject.project,
-          principalId: principal.principalId,
-          principalName: principal.displayName,
-          text: inboundText,
-        }).catch(() => {});
-      }
-
-      // Extract platform-specific target for typing/reactions
-      const target = session.metadata.channelTarget as string;
-
-      // Activation intro message intentionally disabled.
-
-      // ─── Slash command handling (local, no LLM) ──────────────────
-      if (inboundText.trim().startsWith('/')) {
-        const channelType = msg.channelId.split(':')[0] ?? 'cli';
-        const channelTarget = msg.channelId.includes(':')
-          ? msg.channelId.split(':').slice(1).join(':')
-          : msg.channelId;
-
-        // reference runtime-like command reactions: received -> processing -> done/failed
-        if (channel.addReaction) channel.addReaction(target, msg.id, '👋').catch(() => {});
-        if (channel.addReaction) channel.addReaction(target, msg.id, '🧐').catch(() => {});
-        if (channel.removeReaction) channel.removeReaction(target, msg.id, '👋').catch(() => {});
-
-        try {
-          const cmdResult = await commandRegistry.handle(inboundText, {
-            ...toCommandContext(sessionContext),
-            session,
-          });
-
-          if (cmdResult) {
-            if (channel.id === 'cli') {
-              process.stdout.write(cmdResult + '\n');
-            } else {
-              await channel.send({ target, content: cmdResult, replyTo: msg.id });
-            }
-            if (channel.removeReaction) channel.removeReaction(target, msg.id, '🧐').catch(() => {});
-            if (channel.addReaction) channel.addReaction(target, msg.id, '👍').catch(() => {});
-            return;
-          }
-
-          // Unknown command (not handled by registry)
-          if (channel.removeReaction) channel.removeReaction(target, msg.id, '🧐').catch(() => {});
-          if (channel.addReaction) channel.addReaction(target, msg.id, '🤷').catch(() => {});
-        } catch (err) {
-          if (channel.removeReaction) channel.removeReaction(target, msg.id, '🧐').catch(() => {});
-          if (channel.addReaction) channel.addReaction(target, msg.id, '😅').catch(() => {});
-          throw err;
-        }
-      }
-
-      // ─── Message queue: collect/debounce rapid messages ─────────
-      if (messageQueue.getConfig().mode !== 'off' && channel.id !== 'cli' && channel.id !== 'tui') {
-        const queuedAttachments = msg.attachments?.length
-          ? await persistAttachments(msg.attachments)
-          : undefined;
-
-        const queued = messageQueue.enqueue(session.id, {
-          content: inboundText,
-          channelId: msg.channelId,
-          authorId: msg.author.id,
-          principalId: principal.principalId,
-          principalName: principal.displayName,
-          timestamp: Date.now(),
-          messageId: msg.id,
-          attachments: queuedAttachments,
-        });
-        if (queued) {
-          // Immediate feedback while waiting for queue flush
-          if (channel.sendTyping) channel.sendTyping(target).catch(() => {});
-          if (channel.addReaction) channel.addReaction(target, msg.id, '💭').catch(() => {});
-          return; // message was queued, will be batch-processed later
-        }
-      }
-
-      // ─── Typing indicator setup ──────────────────────────────────
-      const typingMode = config.agent.typingMode ?? 'instant';
-      const typingIntervalMs = (config.agent.typingIntervalSeconds ?? 6) * 1000;
-      let typingInterval: ReturnType<typeof setInterval> | null = null;
-
-      if (typingMode === 'instant' && channel.sendTyping) {
-        channel.sendTyping(target).catch(() => {});
-        typingInterval = setInterval(() => {
-          channel.sendTyping!(target).catch(() => {});
-        }, typingIntervalMs);
-      }
-
-      // ─── Reaction feedback: react with 🤔 while processing ──────
-      if (channel.addReaction) {
-        channel.addReaction(target, msg.id, '🧐').catch(() => {});
-      }
-
-      let response = '';
-      let hadError = false;
-
-      // Prepend sender context so the agent knows who it's talking to
-      const senderPrefix = channel.id !== 'cli' && msg.author?.name
-        ? `[From: ${msg.author.name}]\n`
-        : '';
-      const userMessage = senderPrefix + inboundText;
-
-      // Use the correct agent loop — per-agent loops have their own PromptBuilder
-      // (workspace/identity) but share the same provider (auth/API keys).
-      const activeLoop = getAgentLoop(channel.agentId ?? session.metadata?.agentId as string | undefined);
-      const repaired = sanitizeSessionMessages(session);
-      if (repaired > 0) {
-        console.warn(`[session] Repaired ${repaired} malformed message(s) in ${session.id}`);
-      }
-
-      try {
-        // Set active channel for typing/reactions
-        activeLoop.setChannel(channel);
-
-        // Persist inbound media attachments locally
-        const attachments = msg.attachments?.length
-          ? await persistAttachments(msg.attachments)
-          : msg.attachments;
-
-        for await (const chunk of activeLoop.run(session, userMessage, attachments)) {
-          if (channel.id === 'cli') {
-            process.stdout.write(chunk);
-          }
-          response += chunk;
-        }
-      } catch (err) {
-        hadError = true;
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`[tako] Error: ${errMsg}`);
-
-        // Auto-fallback: if model not found (404), try fallback chain or reset to default
-        const is404 = errMsg.includes('404') || errMsg.includes('not_found');
-        if (is404 && !response) {
-          const currentModel = activeLoop.getModel();
-          const fallbacks = config.providers.fallback ?? [];
-          const nextFallback = fallbacks.find(f => f !== currentModel);
-          if (nextFallback) {
-            activeLoop.setModel(nextFallback);
-            response = `⚠️ Model \`${currentModel}\` not found. Auto-switched to fallback: \`${nextFallback}\`\n\nPlease resend your message, or use \`/model default\` to reset.`;
-          } else {
-            activeLoop.setModel(defaultModel);
-            response = `⚠️ Model \`${currentModel}\` not found. Reset to default: \`${defaultModel}\`\n\nPlease resend your message.`;
-          }
-        } else if (!response) {
-          response = formatUserFacingAgentError(err);
-        }
-      }
-
-      // ─── Send remaining text, then clean up ──────
-      if (typingInterval) {
-        clearInterval(typingInterval);
-        typingInterval = null;
-      }
-
-      if (channel.id === 'cli') {
-        if (response && !response.endsWith('\n')) {
-          process.stdout.write('\n');
-        }
-      } else if (channel.id === 'tui') {
-        if (response) {
-          await channel.send({ target: msg.channelId, content: response, replyTo: msg.id });
-        }
-      } else if (response.trim()) {
-        hooks.emit('message_sending', {
-          event: 'message_sending',
-          data: {
-            channelId: msg.channelId,
-            sessionId: session.id,
-            agentId: session.metadata.agentId,
-            content: response,
-            principalId: session.metadata.principalId,
-            principalName: session.metadata.principalName,
-            projectId: session.metadata.projectId,
-            projectSlug: session.metadata.projectSlug,
-            sharedSessionId: session.metadata.sharedSessionId,
-            networkSessionId: session.metadata.networkSessionId,
-            hostNodeId: session.metadata.hostNodeId,
-            participantNodeIds: session.metadata.participantNodeIds,
-            participantIds: session.metadata.participantIds,
-            target,
-          },
-          timestamp: Date.now(),
-        }).catch(() => {});
-
-        const outMsg = { target, content: response.trim(), replyTo: msg.id };
-        try {
-          await channel.send(outMsg);
-        } catch (sendErr) {
-          await deliveryQueue.enqueue(channel.id, outMsg, sendErr instanceof Error ? sendErr.message : String(sendErr));
-        }
-      } else {
-        // Empty response — fallback
-        console.error(`[${channel.id}] Empty response for: "${inboundText.slice(0, 50)}" (session ${session.id}, msgs: ${session.messages.length})`);
-        const fallbackMsg = { target, content: '🤔 I processed your message but had nothing to say. Try rephrasing?', replyTo: msg.id };
-        try {
-          await channel.send(fallbackMsg);
-        } catch (sendErr) {
-          await deliveryQueue.enqueue(channel.id, fallbackMsg, sendErr instanceof Error ? sendErr.message : String(sendErr));
-        }
-      }
-
-      // ─── Persist session to disk (agent loop pushes directly to session.messages) ──
-      sessions.markSessionDirty(session.id);
-
-      // ─── Reaction cleanup AFTER messages are sent ──────
-      if (channel.removeReaction) {
-        channel.removeReaction(target, msg.id, '🧐').catch(() => {});
-      }
-      if (channel.addReaction) {
-        channel.addReaction(target, msg.id, hadError ? '😅' : '👍').catch(() => {});
-      }
-      } catch (outerErr) {
-        // Per-message error isolation: log and continue, don't kill the process
-        const errMsg = outerErr instanceof Error ? outerErr.message : String(outerErr);
-        console.error(`[tako] Error processing message in ${channel.id}: ${errMsg}`);
-        if (outerErr instanceof Error && outerErr.stack) {
-          console.error(outerErr.stack);
-        }
-        // Try to send error reaction if possible
-        if (channel.addReaction) {
-          channel.addReaction(
-            msg.channelId.includes(':') ? msg.channelId.split(':').slice(1).join(':') : msg.channelId,
-            msg.id,
-            '😅',
-          ).catch(() => {});
-        }
-      }
-    });
-  }
-
-  // ─── Message queue processor ────────────────────────────────────
-  // Wire the processor callback now that wireChannel, sessions, and agentLoop exist.
-  messageQueueProcessor = async (sessionId: string, messages: QueuedMessage[]) => {
-    try {
-    const session = sessions.get(sessionId);
-    if (!session) {
-      console.warn(`[message-queue] Session ${sessionId} not found, dropping ${messages.length} messages`);
-      return;
-    }
-
-    const merged = MessageQueue.mergeMessages(messages);
-    if (!merged.trim()) {
-      console.warn(`[message-queue] Empty/invalid batch for session ${sessionId}, skipping`);
-      return;
-    }
-
-    const channelRef = session.metadata?.channelRef as Channel | undefined;
-    if (!channelRef) {
-      console.warn(`[message-queue] No channel ref for session ${sessionId}, processing without channel`);
-    }
-
-    // ─── Concurrent run guard ────────────────────────────────────────
-    // If this session is already being processed (e.g. stuck in a long tool loop),
-    // don't silently queue the message — tell the user we're still working and
-    // re-enqueue so we don't lose the message entirely.
-    if (activeProcessingSessions.has(sessionId)) {
-      console.warn(`[message-queue] Session ${sessionId} already processing — sending busy notice`);
-      const target = (session.metadata?.channelTarget as string) ?? '';
-      const lastMsgId = messages[messages.length - 1]?.messageId;
-      if (channelRef && target) {
-        await channelRef.send({
-          target,
-          content: '⏳ Still working on a previous task — your message has been queued and I\'ll get to it right after.',
-          replyTo: lastMsgId,
-        }).catch(() => {});
-      }
-      // Re-enqueue with a short delay so it gets processed once the current run finishes
-      setTimeout(() => {
-        for (const m of messages) messageQueue.enqueue(sessionId, m);
-      }, 5_000);
-      return;
-    }
-
-    activeProcessingSessions.add(sessionId);
-
-    const activeLoop = getAgentLoop(session.metadata?.agentId as string | undefined);
-    const repaired = sanitizeSessionMessages(session);
-    if (repaired > 0) {
-      console.warn(`[message-queue] Repaired ${repaired} malformed message(s) in ${session.id}`);
-    }
-
-    // Ensure loop has channel reference + latest message metadata for typing/reactions
-    if (channelRef) {
-      activeLoop.setChannel(channelRef);
-      session.metadata.channelRef = channelRef;
-    }
-    const lastMsgId = messages[messages.length - 1]?.messageId;
-    if (lastMsgId) {
-      session.metadata.messageId = lastMsgId;
-    }
-
-    // Determine target for sending response
-    const channelTarget = (session.metadata?.channelTarget as string) ?? '';
-    const target = channelTarget;
-
-    // Per-turn hard timeout — if the agent loop runs longer than this, abort it
-    // so new inbound messages aren't blocked for hours.
-    const TURN_TIMEOUT_MS = (config.agent?.turnTimeoutSeconds ?? 300) * 1000;
-
-    const userMessage = merged;
-    const mergedAttachments = messages.flatMap((m) => m.attachments ?? []);
-    let response = '';
-    let hadError = false;
-
-    try {
-      // Race the agent loop against a hard timeout
-      const loopPromise = (async () => {
-        for await (const chunk of activeLoop.run(session, userMessage, mergedAttachments)) {
-          response += chunk;
-        }
-      })();
-
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`Turn timeout after ${TURN_TIMEOUT_MS / 1000}s`)), TURN_TIMEOUT_MS),
-      );
-
-      await Promise.race([loopPromise, timeoutPromise]);
-    } catch (err) {
-      hadError = true;
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[message-queue] Error processing batch for session ${sessionId}: ${errMsg}`);
-      if (!response) response = formatUserFacingAgentError(err);
-    } finally {
-      activeProcessingSessions.delete(sessionId);
-    }
-
-    // Send response through the channel
-    if (channelRef && target && response.trim()) {
-      const replyMsgId = messages[messages.length - 1]?.messageId;
-      try {
-        await channelRef.send({ target, content: response.trim(), replyTo: replyMsgId });
-      } catch (sendErr) {
-        console.error(`[message-queue] Send error:`, sendErr instanceof Error ? sendErr.message : sendErr);
-      }
-
-      // Queue reaction lifecycle: 💭 -> ✅/⚠️
-      if (replyMsgId) {
-        if (channelRef.removeReaction) channelRef.removeReaction(target, replyMsgId, '💭').catch(() => {});
-        if (channelRef.addReaction) channelRef.addReaction(target, replyMsgId, hadError ? '😅' : '👍').catch(() => {});
-      }
-    }
-
-    sessions.markSessionDirty(sessionId);
-    } catch (err) {
-      console.error(`[message-queue] Unhandled processor error for session ${sessionId}:`, err instanceof Error ? err.message : err);
-    }
-  };
-
   // ─── Media storage ────────────────────────────────────────────────
 
   await initMediaStorage();
@@ -1669,6 +870,37 @@ export async function runEdgeRuntime(): Promise<void> {
     channelDeliveryRegistry,
   });
   let telegramChannel: TelegramChannel | undefined;
+  const { wireChannel, createMessageQueueProcessor } = createEdgeChannelRuntime({
+    config,
+    audit,
+    hooks,
+    sessions,
+    projectMemberships,
+    commandRegistry,
+    messageQueue,
+    deliveryQueue,
+    channelPlatforms,
+    defaultModel,
+    activeProcessingSessions,
+    resolvePrincipal,
+    buildInboundExecutionContext,
+    applyExecutionContextToSession,
+    sanitizeSessionMessages,
+    getSession,
+    resolveProject,
+    buildAgentAccessMetadata,
+    isDiscordInvocationAllowed,
+    autoEnrollProjectRoomParticipant,
+    sweepProjectRoomSignal,
+    resolveInboundAgentId: ({ channel, channelType, channelTarget, guildId }) =>
+      channel.agentId ?? resolveAgentForChannel(agentRegistry.list(), channelType, channelTarget, guildId),
+    shouldThrottlePeerAgentMessage,
+    getAgentLoop,
+    persistInboundAttachments: persistAttachments,
+    shutdown: async () => shutdown(),
+    formatUserFacingAgentError,
+  });
+  messageQueueProcessor = createMessageQueueProcessor();
 
   const useTui = process.argv.includes('--tui') && process.stdout.isTTY;
 
