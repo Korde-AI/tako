@@ -375,12 +375,20 @@ describe('message tools', () => {
   it('infers Discord guild and parent channel from execution context for channel creation', async () => {
     let seen: { guildId: string; name: string; topic?: string; parentId?: string; privateUserId?: string } | null = null;
     const tools = createMessageTools({
-      resolveDiscord: () => ({
-        createChannel: async (guildId: string, name: string, opts?: { topic?: string; parentId?: string; privateUserId?: string }) => {
-          seen = { guildId, name, topic: opts?.topic, parentId: opts?.parentId, privateUserId: opts?.privateUserId };
-          return { id: '123', name };
+      resolveSurface: () => ({
+        platform: 'discord',
+        send: async () => ({ messageId: 'msg-1' }),
+        createChannel: async (input) => {
+          seen = {
+            guildId: input.guildId,
+            name: input.name,
+            topic: input.topic,
+            parentId: input.parentId,
+            privateUserId: input.privateUserId,
+          };
+          return { id: '123', name: input.name };
         },
-      } as any),
+      }),
     });
     const messageTool = tools.find((tool) => tool.name === 'message');
     assert.ok(messageTool);

@@ -31,7 +31,8 @@ npx prettier --check src/  # Format check
 
 ### Architecture Documents
 
-- `ARCHITECTURE.md` — full design with interfaces, tool classification, milestones
+- `ARCHITECTURE.md` — design intent and subsystem philosophy
+- `docs/repo-structure.md` — current runtime and repository boundary map
 - `AGENTS.md` — engineering protocol (you're reading the Claude-specific version)
 
 ### Reference Systems (always check before designing)

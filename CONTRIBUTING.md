@@ -6,6 +6,7 @@ Thanks for contributing.
 
 - Read `README.md`
 - Read `docs/DEVELOPMENT.md`
+- Read `docs/repo-structure.md`
 - Run the project locally once
 
 ## Local setup
@@ -51,9 +52,10 @@ npm run check
 If you change install/run/developer behavior, update:
 
 - `README.md`
-- `docs/INSTALL.md`
-- `docs/USAGE.md`
+- `docs/server-discord-quickstart.md` when the operator flow changes
+- `docs/edge-dev-setup.md` when the dev-start flow changes
 - `docs/DEVELOPMENT.md`
+- `docs/repo-structure.md` when boundaries or composition change
 
 ## PR expectations
 

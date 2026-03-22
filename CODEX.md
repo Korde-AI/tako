@@ -16,7 +16,8 @@ npm run check         # All of the above
 
 ## Key Files
 
-- `ARCHITECTURE.md` — full design, interfaces, tool classification
+- `ARCHITECTURE.md` — design intent, interfaces, and long-term constraints
+- `docs/repo-structure.md` — current repo/runtime boundary map
 - `AGENTS.md` — engineering protocol (read first)
 - `src/providers/provider.ts` — Provider interface
 - `src/channels/channel.ts` — Channel interface

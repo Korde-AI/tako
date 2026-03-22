@@ -1,3 +1,5 @@
+import type { ChannelPlatform } from '../channels/platforms.js';
+
 export type ProjectStatus = 'active' | 'archived' | 'closed';
 export type ProjectRole = 'read' | 'contribute' | 'write' | 'admin';
 
@@ -34,7 +36,7 @@ export interface ProjectMembership {
 export interface ProjectBinding {
   bindingId: string;
   projectId: string;
-  platform: 'discord' | 'telegram' | 'cli';
+  platform: ChannelPlatform;
   channelTarget: string;
   threadId?: string;
   agentId?: string;

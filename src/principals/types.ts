@@ -1,6 +1,8 @@
+import type { ChannelPlatform } from '../channels/platforms.js';
+
 export type PrincipalType = 'human' | 'local-agent' | 'remote-agent' | 'system';
 export type PrincipalAuthorityLevel = 'owner' | 'admin' | 'member' | 'guest';
-export type PrincipalPlatform = 'discord' | 'telegram' | 'cli' | 'web' | 'system';
+export type PrincipalPlatform = ChannelPlatform | 'web' | 'system';
 
 export interface Principal {
   principalId: string;

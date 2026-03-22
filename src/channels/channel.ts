@@ -22,6 +22,8 @@
  * ```
  */
 
+import type { ChannelPlatform } from './platforms.js';
+
 // ─── Message types ──────────────────────────────────────────────────
 
 /** An inbound message received from any channel. */
@@ -98,7 +100,7 @@ export type MessageHandler = (msg: InboundMessage) => void | Promise<void>;
  */
 export interface Channel {
   /** Unique channel identifier (e.g. 'discord', 'telegram', 'cli') */
-  id: string;
+  id: ChannelPlatform;
 
   /** If set, all messages on this channel route to this specific agent. */
   agentId?: string;

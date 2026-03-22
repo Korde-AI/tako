@@ -1,11 +1,11 @@
 import type { SessionManager } from '../gateway/session.js';
 import type { ProjectBindingRegistry } from './bindings.js';
 import type { ProjectRegistry } from './registry.js';
-import type { PrincipalRegistry } from '../principals/registry.js';
 import type { Project } from './types.js';
+import type { ChannelPlatform } from '../channels/platforms.js';
 
 export interface RoomClosedInput {
-  platform: 'discord';
+  platform: ChannelPlatform;
   channelId: string;
   kind: 'channel' | 'thread';
   reason: 'deleted' | 'archived';
@@ -13,26 +13,35 @@ export interface RoomClosedInput {
 }
 
 export interface RoomParticipantInput {
+  platform: ChannelPlatform;
   agentId?: string;
   channelId: string;
-  guildId?: string;
+  threadId?: string;
   kind: 'channel' | 'thread';
-  userIds: string[];
-  reason: 'channel_access_granted' | 'thread_member_added';
+  participantIds: string[];
+  reason: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ResolvedRoomParticipant {
+  principalId: string;
+  principalName?: string;
+  platformUserId?: string;
+  platform: ChannelPlatform;
 }
 
 export interface ProjectRoomLifecycleDeps {
   projectBindings: ProjectBindingRegistry;
   projectRegistry: ProjectRegistry;
   sessions: SessionManager;
-  principalRegistry: PrincipalRegistry;
   buildProjectBackground: (projectId: string, reason: string) => Promise<unknown>;
+  resolveParticipantPrincipals: (input: RoomParticipantInput) => Promise<ResolvedRoomParticipant[]>;
   autoEnrollProjectRoomParticipant: (input: {
     project: Project;
     principalId: string;
     principalName?: string;
     platformUserId?: string;
-    platform: 'discord' | 'telegram' | 'cli';
+    platform: ChannelPlatform;
     addedBy: string;
   }) => Promise<boolean>;
 }
@@ -79,29 +88,30 @@ export function createProjectRoomLifecycle(deps: ProjectRoomLifecycleDeps) {
   };
 
   const handleRoomParticipant = async (input: RoomParticipantInput): Promise<void> => {
+    const parentChannelId = typeof input.metadata?.['parentChannelId'] === 'string'
+      ? input.metadata['parentChannelId']
+      : undefined;
     const binding = deps.projectBindings.resolve({
-      platform: 'discord',
-      channelTarget: input.channelId,
-      threadId: input.kind === 'thread' ? input.channelId : undefined,
+      platform: input.platform,
+      channelTarget: input.kind === 'channel' ? input.channelId : parentChannelId,
+      threadId: input.threadId ?? (input.kind === 'thread' ? input.channelId : undefined),
       agentId: input.agentId,
     }) ?? deps.projectBindings.resolve({
-      platform: 'discord',
-      channelTarget: input.channelId,
+      platform: input.platform,
+      channelTarget: input.kind === 'channel' ? input.channelId : parentChannelId,
       agentId: input.agentId,
     });
     if (!binding) return;
     const project = deps.projectRegistry.get(binding.projectId);
     if (!project || project.status === 'closed') return;
 
-    for (const userId of input.userIds) {
-      const principal = deps.principalRegistry.findByPlatform('discord', userId);
-      if (!principal) continue;
+    for (const participant of await deps.resolveParticipantPrincipals(input)) {
       await deps.autoEnrollProjectRoomParticipant({
         project,
-        principalId: principal.principalId,
-        principalName: principal.displayName,
-        platformUserId: userId,
-        platform: 'discord',
+        principalId: participant.principalId,
+        principalName: participant.principalName,
+        platformUserId: participant.platformUserId,
+        platform: participant.platform,
         addedBy: project.ownerPrincipalId,
       });
     }

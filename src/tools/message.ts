@@ -19,31 +19,21 @@
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import type { Tool, ToolContext, ToolResult } from './tool.js';
-import type { DiscordChannel } from '../channels/discord.js';
-import type { TelegramChannel } from '../channels/telegram.js';
+import type {
+  MessageSurface,
+  MessageSurfacePlatform,
+} from '../channels/surface-capabilities.js';
 
 export interface MessageToolDeps {
-  discord?: DiscordChannel;
-  telegram?: TelegramChannel;
-  /** Resolve the correct Discord channel for a given agentId at call time. */
-  resolveDiscord?: (agentId?: string) => DiscordChannel | undefined;
-  /** Resolve the correct Telegram channel for a given agentId at call time. */
-  resolveTelegram?: (agentId?: string) => TelegramChannel | undefined;
+  /** Resolve the correct messaging surface for a given platform and agent at call time. */
+  resolveSurface: (platform: MessageSurfacePlatform, agentId?: string) => MessageSurface | undefined;
 }
 
 /**
- * Create the message tool bound to channel adapters.
- * Supports per-agent channel resolution via resolveDiscord/resolveTelegram.
+ * Create the message tool bound to messaging surface capabilities.
+ * The tool layer does not depend directly on Discord/Telegram implementations.
  */
 export function createMessageTools(deps: MessageToolDeps): Tool[] {
-  const { resolveDiscord, resolveTelegram } = deps;
-
-  // Fallback to static channels if resolvers not provided
-  const getDiscord = (agentId?: string): DiscordChannel | undefined =>
-    resolveDiscord ? resolveDiscord(agentId) : deps.discord;
-  const getTelegram = (agentId?: string): TelegramChannel | undefined =>
-    resolveTelegram ? resolveTelegram(agentId) : deps.telegram;
-
   const messageTool: Tool = {
     name: 'message',
     description:
@@ -146,16 +136,16 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
         return p.parentId ?? fromExecution ?? (typeof fromTarget === 'string' ? fromTarget : undefined);
       };
 
-      // Resolve per-agent channels at call time using ctx.agentId
-      const discord = getDiscord(ctx.agentId);
-      const telegram = getTelegram(ctx.agentId);
+      const resolveSurface = (): MessageSurface | undefined => deps.resolveSurface(p.platform, ctx.agentId);
 
       // Validate platform availability
-      if (p.platform === 'discord' && !discord) {
-        return { output: '', success: false, error: 'Discord channel is not configured or connected for this agent.' };
-      }
-      if (p.platform === 'telegram' && !telegram) {
-        return { output: '', success: false, error: 'Telegram channel is not configured or connected for this agent.' };
+      const surface = resolveSurface();
+      if (!surface) {
+        return {
+          output: '',
+          success: false,
+          error: `${p.platform === 'discord' ? 'Discord' : 'Telegram'} channel is not configured or connected for this agent.`,
+        };
       }
 
       try {
@@ -166,48 +156,39 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
             if (!target) return { output: '', success: false, error: 'target (channel/chat ID) is required for send — or use "current" to send to the active channel' };
             if (!p.message && !p.media) return { output: '', success: false, error: 'message or media is required for send' };
 
-            if (p.platform === 'discord') {
-              if (p.media) {
-                const isUrl = /^https?:\/\//i.test(p.media);
-                const attachments: import('../channels/channel.js').Attachment[] = [];
-                if (isUrl) {
-                  attachments.push({ type: 'file', url: p.media, filename: basename(new URL(p.media).pathname) || 'attachment' });
-                } else {
-                  const data = await readFile(p.media);
-                  attachments.push({ type: 'file', data, filename: basename(p.media) || 'attachment' });
-                }
-
-                const msgId = await discord!.sendAndGetId!({
-                  target,
-                  content: p.message ?? '',
-                  attachments,
-                });
-                return {
-                  output: JSON.stringify({ sent: true, platform: 'discord', channelId: target, messageId: msgId, attached: true, agentId: ctx.agentId }),
-                  success: true,
-                };
+            const attachments: import('../channels/channel.js').Attachment[] = [];
+            if (p.media) {
+              const isUrl = /^https?:\/\//i.test(p.media);
+              if (isUrl) {
+                attachments.push({ type: 'file', url: p.media, filename: basename(new URL(p.media).pathname) || 'attachment' });
+              } else {
+                const data = await readFile(p.media);
+                attachments.push({ type: 'file', data, filename: basename(p.media) || 'attachment' });
               }
-
-              const msgId = await discord!.sendToChannel(target, p.message ?? '');
-              return {
-                output: JSON.stringify({ sent: true, platform: 'discord', channelId: target, messageId: msgId, agentId: ctx.agentId }),
-                success: true,
-              };
-            } else {
-              if (p.media) {
-                return { output: '', success: false, error: 'media attachments are currently supported for Discord only' };
-              }
-              const msgId = await telegram!.sendToChat(target, p.message ?? '');
-              return {
-                output: JSON.stringify({ sent: true, platform: 'telegram', chatId: target, messageId: msgId, agentId: ctx.agentId }),
-                success: true,
-              };
             }
+
+            const result = await surface.send({
+              target,
+              content: p.message ?? '',
+              attachments,
+            });
+            return {
+              output: JSON.stringify({
+                sent: true,
+                platform: p.platform,
+                channelId: target,
+                chatId: p.platform === 'telegram' ? target : undefined,
+                messageId: result.messageId,
+                attached: attachments.length > 0,
+                agentId: ctx.agentId,
+              }),
+              success: true,
+            };
           }
 
           // ─── channel-create ────────────────────────────────────
           case 'channel-create': {
-            if (p.platform !== 'discord') {
+            if (!surface.createChannel) {
               return { output: '', success: false, error: 'channel-create is only supported on Discord' };
             }
             const guildId = inferDiscordGuildId();
@@ -220,7 +201,9 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
             }
             if (!p.name) return { output: '', success: false, error: 'name is required for channel-create' };
 
-            const channel = await discord!.createChannel(guildId, p.name, {
+            const channel = await surface.createChannel({
+              guildId,
+              name: p.name,
               topic: p.topic,
               parentId: inferDiscordParentId(),
               privateUserId: p.private ? ctx.executionContext?.authorId : undefined,
@@ -240,12 +223,13 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
 
           // ─── channel-edit ──────────────────────────────────────
           case 'channel-edit': {
-            if (p.platform !== 'discord') {
+            if (!surface.editChannel) {
               return { output: '', success: false, error: 'channel-edit is only supported on Discord' };
             }
             if (!p.target) return { output: '', success: false, error: 'target (channel ID) is required for channel-edit' };
 
-            await discord!.editChannel(p.target, {
+            await surface.editChannel({
+              channelId: p.target,
               name: p.name,
               topic: p.topic,
             });
@@ -258,12 +242,12 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
 
           // ─── channel-delete ────────────────────────────────────
           case 'channel-delete': {
-            if (p.platform !== 'discord') {
+            if (!surface.deleteChannel) {
               return { output: '', success: false, error: 'channel-delete is only supported on Discord' };
             }
             if (!p.target) return { output: '', success: false, error: 'target (channel ID) is required for channel-delete' };
 
-            await discord!.deleteChannel(p.target);
+            await surface.deleteChannel(p.target);
 
             return {
               output: JSON.stringify({ deleted: true, platform: 'discord', channelId: p.target }),
@@ -273,13 +257,15 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
 
           // ─── thread-create ─────────────────────────────────────
           case 'thread-create': {
-            if (p.platform !== 'discord') {
+            if (!surface.createThread) {
               return { output: '', success: false, error: 'thread-create is only supported on Discord' };
             }
             if (!p.target) return { output: '', success: false, error: 'target (channel ID) is required for thread-create' };
             if (!p.name) return { output: '', success: false, error: 'name is required for thread-create' };
 
-            const thread = await discord!.createThread(p.target, p.name, {
+            const thread = await surface.createThread({
+              channelId: p.target,
+              name: p.name,
               messageId: p.messageId,
             });
 
@@ -291,14 +277,18 @@ export function createMessageTools(deps: MessageToolDeps): Tool[] {
 
           // ─── react ─────────────────────────────────────────────
           case 'react': {
-            if (p.platform !== 'discord') {
+            if (!surface.react) {
               return { output: '', success: false, error: 'react is only supported on Discord' };
             }
             if (!p.target) return { output: '', success: false, error: 'target (channel ID) is required for react' };
             if (!p.messageId) return { output: '', success: false, error: 'messageId is required for react' };
             if (!p.emoji) return { output: '', success: false, error: 'emoji is required for react' };
 
-            await discord!.react(p.target, p.messageId, p.emoji);
+            await surface.react({
+              channelId: p.target,
+              messageId: p.messageId,
+              emoji: p.emoji,
+            });
 
             return {
               output: JSON.stringify({ reacted: true, platform: 'discord', channelId: p.target, messageId: p.messageId, emoji: p.emoji }),

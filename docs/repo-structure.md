@@ -9,9 +9,9 @@ boundaries that matter for refactoring:
 - product surfaces
 - domain modules
 
-The immediate goal is not to rename everything at once. The goal is to stop
-mixing these boundaries in `src/index.ts` and to keep future work from adding
-more hardcoded cross-layer wiring.
+The immediate goal is not to rename everything at once. The goal is to keep
+the process entrypoint thin, push runtime composition into dedicated modules,
+and stop future work from adding more hardcoded cross-layer wiring.
 
 ## Boundary Rules
 
@@ -94,6 +94,7 @@ Areas:
 - `src/doctor/`
 - `src/daemon/`
 - `src/tui/`
+- `src/runtime/`
 
 Rule:
 - they should call into the kernel/runtime composition layer
@@ -117,21 +118,29 @@ Rule:
 
 ## Current Pressure Points
 
-### 1. `src/index.ts` is still too large
+### 1. `src/runtime/edge-runtime.ts` is now the main pressure point
 
-Current size is roughly 6900 lines. It is acting as:
-- process entrypoint
-- composition root
-- Discord runtime policy layer
-- project orchestration layer
-- peer approval coordinator
-- network relay coordinator
+`src/index.ts` is now a thin launcher plus legacy CLI handlers.
+The heavy edge bootstrap moved into:
 
-That is too many responsibilities for one file.
+- `src/runtime/edge-runtime.ts`
+- `src/cli/runtime.ts`
+
+That is the correct direction, but the edge runtime is still large and still
+owns too much orchestration in one module.
+
+The next structural cuts should continue from `src/runtime/edge-runtime.ts`,
+not move logic back into `src/index.ts`.
+
+Recent extractions now live under:
+- `src/runtime/project-coordination.ts`
+- `src/runtime/approval-runtime.ts`
+- `src/runtime/network-runtime.ts`
+- `src/cli/runtime.ts`
 
 ### 2. Tool registration was hardcoded in the entrypoint
 
-Built-in tool registration used to live directly in `src/index.ts`.
+Built-in tool registration used to live directly in the entrypoint.
 That makes the kernel/plugin boundary blurry.
 
 The first structural correction is:
@@ -139,17 +148,27 @@ The first structural correction is:
 
 This moves built-in tool pack registration into an explicit composition module.
 
-### 3. Skills and runtime policies are still partially mixed
+### 3. Surface capabilities still need to keep concrete channels out of tools
 
-Skills should describe when and how to use tools.
-Runtime should enforce only real invariants:
+The message tool now routes through:
+
+- `src/channels/surface-capabilities.ts`
+
+That is the right seam for Discord, Telegram, dashboard, Slack, and future
+surfaces. The remaining rule is:
+
+- tools should depend on surface capabilities
+- channels should implement those capabilities
+- runtime composition should resolve which surface instance is active
+
+### 4. Skills and runtime policies are still partially mixed
+
+Skills should describe when and how to use tools. Runtime should enforce only
+real invariants:
 - permissions
 - room binding
 - security
 - persistence
-
-If a behavior is only prompt guidance, keep it in skills.
-If it is a safety or consistency invariant, keep it in runtime.
 
 ## Recommended Target Layout
 
@@ -157,6 +176,9 @@ This is the target conceptual split. It does not require immediate file moves.
 
 ```text
 src/
+  runtime/
+    edge-runtime/
+    cli-runtime/
   kernel/
     agent-loop/
     prompt/
@@ -196,11 +218,11 @@ The current repo does not need a giant rename right now. The practical path is:
 
 ## Immediate Refactor Path
 
-1. Keep `src/index.ts` as process bootstrap + high-level wiring only.
-2. Move built-in tool registration and other composition logic into dedicated
-   modules under `src/core/`.
-3. Split Discord-specific project coordination out of `src/index.ts` into
-   domain/runtime modules.
+1. Keep `src/index.ts` as a minimal launcher only.
+2. Keep `src/cli/runtime.ts` responsible for CLI dispatch and process mode
+   selection.
+3. Keep `src/runtime/edge-runtime.ts` responsible for edge bootstrap and move
+   its remaining orchestration into smaller runtime composition modules.
 4. Keep `skills/` prompt-only unless a skill explicitly ships a plugin
    extension.
 5. Treat channels/providers/network/memory/auth/sandbox as plugin families,

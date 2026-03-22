@@ -28,7 +28,8 @@ Key extension points (interfaces):
 
 Reference architecture docs:
 
-- `ARCHITECTURE.md` — full architecture design with interfaces, tool classification, milestones
+- `ARCHITECTURE.md` — design intent and system philosophy
+- `docs/repo-structure.md` — current repository boundary map and refactor target
 - reference runtime docs: `~/.nvm/versions/node/v22.22.0/lib/node_modules/reference-runtime/docs/`
 - reference architecture repo: https://github.com/reference-arch-labs/reference-arch
 

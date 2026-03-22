@@ -2,6 +2,11 @@
 
 > Agent-as-CPU OS: minimal core + pluggable skill arms
 
+> Current boundary note:
+> - `ARCHITECTURE.md` is the design-intent document.
+> - `docs/repo-structure.md` is the current repo/runtime structure reference.
+> - `README.md` and `docs/server-discord-quickstart.md` are the current operator entry docs.
+
 ## Philosophy
 
 - **Agent = CPU**: the LLM is the processor, it executes instructions
@@ -41,6 +46,70 @@
 4. **Convention over config** — sane defaults, override when needed
 5. **Markdown-first memory** — plain files are the source of truth
 6. **Single binary mindset** — even in TS, think "one process, fast start"
+
+## Runtime Topology
+
+Tako has two runtime roles:
+
+- `edge` — the full personal agent runtime
+- `hub` — an optional control plane for multi-edge coordination
+
+The default product path is Discord-first and edge-first:
+
+- one user can run a single edge with no hub at all
+- multiple humans can collaborate through Discord on that same edge
+- a hub is only needed later for cross-edge registry, routing, presence, and aggregated audit
+
+### Edge
+
+An edge owns:
+
+- local agent loop
+- local tools
+- local memory
+- local provider credentials
+- local files and worktrees
+- local channel bindings
+
+An edge can run solo or participate in a larger network.
+
+### Hub
+
+The hub is infrastructure, not an agent host.
+
+It coordinates:
+
+- node registry
+- project routing
+- shared-session relay
+- presence
+- aggregated audit
+
+It does not own:
+
+- LLM inference
+- private memory
+- local tools
+- local filesystems
+
+### Topology sketch
+
+```text
+optional hub:
+  registry
+  routing
+  session relay
+  presence
+  audit aggregation
+
+edge:
+  agent loop
+  providers
+  tools
+  memory
+  project state
+  channel adapters
+```
 
 ## Core Subsystems (5 Traits)
 

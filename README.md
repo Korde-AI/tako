@@ -173,13 +173,16 @@ Typical collaboration flow:
 
 Use these entry points instead of relying on older docs that still describe the pre-edge/pre-hub layout:
 
+- [Server Discord quick start](docs/server-discord-quickstart.md)
+- [Edge dev setup](docs/edge-dev-setup.md)
 - [Solo edge guide](docs/getting-started-solo.md)
 - [Discord personal agent + collaboration guide](docs/discord-personal-agent-collaboration-guide.md)
 - [Local collaboration guide](docs/getting-started-local-collab.md)
 - [Network collaboration guide](docs/getting-started-network-collab.md)
+- [Architecture](ARCHITECTURE.md)
+- [Repo structure](docs/repo-structure.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Release boundary](docs/release-boundary.md)
-- [Collaboration design](docs/collaboration-network.md)
 - [Phase 14 QA checklist](docs/qa-phase14.md)
 
 ## Current verification
@@ -194,7 +197,7 @@ Latest verified suite result:
 
 ## Notes before push or deploy
 
-- `main` currently contains the collaboration-network implementation and follow-up cleanup commits
+- `ARCHITECTURE.md` is the canonical design doc and `docs/repo-structure.md` is the current implementation boundary map
 - if you deploy multiple nodes on one machine, always give each one a distinct `--home`
 - if you use Discord or Telegram, treat tokens as secrets and keep them out of git
 - for a single-server multi-edge test, use the tmux harness in `scripts/tmux-single-server-test.sh`

@@ -87,6 +87,7 @@ export type RoomClosedHandler = (input: {
 export type RoomParticipantHandler = (input: {
   channelId: string;
   guildId?: string;
+  parentChannelId?: string;
   kind: 'channel' | 'thread';
   userIds: string[];
   reason: 'channel_access_granted' | 'thread_member_added';
@@ -250,9 +251,13 @@ export class DiscordChannel implements Channel {
       if (added.length === 0) return;
       for (const handler of this.roomParticipantHandlers) {
         try {
+          const parentChannelId = isThreadLike(newChannel)
+            ? (newChannel as AnyThreadChannel).parentId ?? undefined
+            : undefined;
           await handler({
             channelId: newChannel.id,
             guildId: 'guildId' in newChannel ? newChannel.guildId ?? undefined : undefined,
+            parentChannelId,
             kind: newChannel.isThread() ? 'thread' : 'channel',
             userIds: added,
             reason: 'channel_access_granted',
@@ -276,6 +281,7 @@ export class DiscordChannel implements Channel {
           await handler({
             channelId,
             guildId: thread.guildId ?? undefined,
+            parentChannelId: thread.parentId ?? undefined,
             kind: 'thread',
             userIds,
             reason: 'thread_member_added',

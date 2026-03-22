@@ -404,7 +404,8 @@ But you should test the core collaboration model first without Discord, because:
 
 Start with:
 - `README.md`
-- `docs/collaboration-network.md`
+- `ARCHITECTURE.md`
+- `docs/repo-structure.md`
 - `docs/getting-started-network-collab.md`
 - `docs/qa-phase14.md`
 

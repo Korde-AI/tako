@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ProjectBinding } from './types.js';
+import type { ChannelPlatform } from '../channels/platforms.js';
 
 export class ProjectBindingRegistry {
   private bindings = new Map<string, ProjectBinding>();
@@ -50,7 +51,7 @@ export class ProjectBindingRegistry {
 
   async bind(input: {
     projectId: string;
-    platform: 'discord' | 'telegram' | 'cli';
+    platform: ChannelPlatform;
     channelTarget: string;
     threadId?: string;
     agentId?: string;
@@ -73,13 +74,14 @@ export class ProjectBindingRegistry {
 
   resolve(input: {
     platform: string;
-    channelTarget: string;
+    channelTarget?: string;
     threadId?: string;
     agentId?: string;
   }): ProjectBinding | null {
+    if (!input.channelTarget && !input.threadId) return null;
     const matches = this.listActive().filter((binding) => {
       if (binding.platform !== input.platform) return false;
-      if (binding.channelTarget !== input.channelTarget) return false;
+      if (input.channelTarget && binding.channelTarget !== input.channelTarget) return false;
       if (binding.threadId && binding.threadId !== input.threadId) return false;
       return true;
     });
@@ -87,7 +89,8 @@ export class ProjectBindingRegistry {
 
     const score = (binding: ProjectBinding): number => {
       let value = 0;
-      if (binding.threadId && binding.threadId === input.threadId) value += 4;
+      if (input.threadId && binding.threadId && binding.threadId === input.threadId) value += 4;
+      if (input.channelTarget && binding.channelTarget === input.channelTarget) value += 2;
       if (binding.agentId && binding.agentId === input.agentId) value += 2;
       if (!binding.agentId) value += 1;
       return value;
