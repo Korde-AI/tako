@@ -3,16 +3,16 @@
   "version": "0.0.21",
   "description": "Agent-as-CPU OS: minimal core + pluggable skill arms",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": ".tako-build/dist/index.js",
+  "types": ".tako-build/dist/index.d.ts",
   "bin": {
-    "tako": "./dist/index.js"
+    "tako": "./.tako-build/dist/index.js"
   },
   "scripts": {
     "build": "bun run tsc",
     "dev": "bun run tsc --watch",
     "start": "bun run src/index.ts",
-    "start:node": "node dist/index.js",
+    "start:node": "node .tako-build/dist/index.js",
     "doctor": "bun run src/index.ts doctor",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
@@ -48,7 +48,7 @@
     "url": "https://github.com/Korde-AI/tako/issues"
   },
   "files": [
-    "dist",
+    ".tako-build/dist",
     "skills",
     "docs",
     "tako.example.json",

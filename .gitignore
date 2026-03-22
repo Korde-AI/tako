@@ -2,6 +2,7 @@
 *~
 # Build output
 # Dependencies
+.tako-build/
 dist/
 .DS_Store
 .env

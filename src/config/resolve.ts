@@ -257,10 +257,14 @@ export async function resolveConfig(configPath?: string, opts?: { home?: string 
     return resolve(configDir, expanded);
   });
 
-  // Always include the built-in skills directory from the Tako install
-  // import.meta.url → dist/config/resolve.js, go up to project root
-  const distDir = resolve(new URL('.', import.meta.url).pathname, '..');
-  const projectRoot = resolve(distDir, '..');
+  // Always include the built-in skills directory from the Tako install.
+  // Resolve the package root robustly from either source or transpiled output.
+  let projectRoot = resolve(new URL('.', import.meta.url).pathname);
+  while (!existsSync(join(projectRoot, 'package.json'))) {
+    const parent = dirname(projectRoot);
+    if (parent === projectRoot) break;
+    projectRoot = parent;
+  }
   const builtinSkillsDir = resolve(projectRoot, 'skills');
   if (!config.skills.dirs.includes(builtinSkillsDir)) {
     config.skills.dirs.unshift(builtinSkillsDir);

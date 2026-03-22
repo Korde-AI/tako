@@ -51,7 +51,7 @@ npm pack --dry-run
 
 Confirm tarball contains expected files:
 
-- `dist/`
+- `.tako-build/dist/`
 - `skills/`
 - `docs/`
 - `README.md`

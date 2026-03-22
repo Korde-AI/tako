@@ -13,6 +13,7 @@ import { join, relative } from 'node:path';
 const SKIP_DIRS = new Set([
   'node_modules',
   '.git',
+  '.tako-build',
   'dist',
   '.next',
   '.turbo',

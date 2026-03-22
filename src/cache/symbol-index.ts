@@ -317,7 +317,7 @@ export class SymbolIndex {
 
       // Skip common non-source directories
       if (entry.isDirectory()) {
-        if (['node_modules', '.git', 'dist', 'build', '.next', '__pycache__', '.venv'].includes(entry.name)) {
+        if (['node_modules', '.git', '.tako-build', 'dist', 'build', '.next', '__pycache__', '.venv'].includes(entry.name)) {
           continue;
         }
         await this.walkDir(fullPath, maxDepth, depth + 1, callback);

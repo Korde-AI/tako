@@ -233,7 +233,7 @@ function generateToolsMd(): string {
 
 ## Build & Development
 
-- **Build:** \`npm run build\` (TypeScript → dist/)
+- **Build:** \`npm run build\` (TypeScript -> .tako-build/dist/)
 - **Dev mode:** \`tako dev\` (auto-rebuild on changes)
 - **Rebuild + restart:** \`npm run build && tako restart\`
 - **Check status:** \`tako status\`
