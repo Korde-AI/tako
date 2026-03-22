@@ -5,15 +5,21 @@ Use this mode when one user owns one Tako edge and does not need hub networking.
 ## Start
 
 ```bash
-tako onboard --home ~/.tako-edge-main
-tako start --home ~/.tako-edge-main
+bun run src/index.ts onboard --home /tmp/tako-edge-main
+bun run src/index.ts start --home /tmp/tako-edge-main --port 18801
+```
+
+After the first foreground verification, the normal server-style command is:
+
+```bash
+bun run src/index.ts start --home /tmp/tako-edge-main --port 18801 -d
 ```
 
 Recommended checks:
 
 ```bash
-tako status --home ~/.tako-edge-main --json
-tako doctor --home ~/.tako-edge-main
+bun run src/index.ts status --home /tmp/tako-edge-main --json
+bun run src/index.ts doctor --home /tmp/tako-edge-main
 ```
 
 ## What this mode supports
@@ -35,7 +41,7 @@ tako doctor --home ~/.tako-edge-main
 ## Typical commands
 
 ```bash
-tako projects list --home ~/.tako-edge-main --json
-tako principals list --home ~/.tako-edge-main
-tako memory search "query" --home ~/.tako-edge-main
+bun run src/index.ts projects list --home /tmp/tako-edge-main --json
+bun run src/index.ts principals list --home /tmp/tako-edge-main
+bun run src/index.ts memory search "query" --home /tmp/tako-edge-main
 ```

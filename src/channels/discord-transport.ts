@@ -18,7 +18,7 @@ import {
   type DiscordInteractionState,
   type DiscordMessageHandlerState,
 } from './discord-types.js';
-import { wireDiscordInteractionHandlers } from './discord-interactions.js';
+import { wireDiscordInteractionHandlers } from './discord-interaction-runtime.js';
 import { scanSecrets } from '../core/security.js';
 
 export interface DiscordTransportState extends DiscordMessageHandlerState {

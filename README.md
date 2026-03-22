@@ -23,8 +23,8 @@ An edge can run:
 Examples:
 
 ```bash
-tako start --home ~/.tako-edge-main
-tako start --home ~/.tako-edge-alice --hub http://127.0.0.1:18790
+bun run src/index.ts start --home /tmp/tako-edge-main --port 18801
+bun run src/index.ts start --home /tmp/tako-edge-alice --port 18802 --hub http://127.0.0.1:18790
 ```
 
 ### Hub
@@ -45,7 +45,7 @@ The hub does not:
 Example:
 
 ```bash
-tako hub start --home ~/.tako-hub --port 18790
+bun run src/index.ts hub start --home /tmp/tako-hub --port 18790
 ```
 
 ## What works now
@@ -107,8 +107,8 @@ For the simplest server + Discord setup, start here:
 ```bash
 git clone https://github.com/Korde-AI/tako.git
 cd tako
-npm install
-npm run build
+bun install
+bun run tsc --noEmit
 ```
 
 ### Start a solo edge
@@ -116,6 +116,12 @@ npm run build
 ```bash
 bun run src/index.ts onboard --home /tmp/tako-discord/edge-main
 bun run src/index.ts start --home /tmp/tako-discord/edge-main --port 18801
+```
+
+For a long-running server process after that first foreground check:
+
+```bash
+bun run src/index.ts start --home /tmp/tako-discord/edge-main --port 18801 -d
 ```
 
 ### Start two Discord-first personal edges with no hub
@@ -128,34 +134,37 @@ bun run src/index.ts start --home /tmp/tako-discord/edge-jiaxin --port 18802
 ### Start a hub and two edges on one server later
 
 ```bash
-tako hub start --home /srv/tako/hub --port 18790
-tako start --home /srv/tako/edge-a --port 18801
-tako start --home /srv/tako/edge-b --port 18802
+bun run src/index.ts hub start --home /srv/tako/hub --port 18790
+bun run src/index.ts start --home /srv/tako/edge-a --port 18801
+bun run src/index.ts start --home /srv/tako/edge-b --port 18802
 ```
 
 ### Operator checks
 
 ```bash
-tako status --home ~/.tako-edge-main --json
-tako network status --home ~/.tako-edge-main --json
-tako hub status --home ~/.tako-hub --json
-tako doctor --home ~/.tako-edge-main
+bun run src/index.ts status --home /tmp/tako-edge-main --json
+bun run src/index.ts network status --home /tmp/tako-edge-main --json
+bun run src/index.ts hub status --home /tmp/tako-hub --json
+bun run src/index.ts doctor --home /tmp/tako-edge-main
 ```
 
 ## Main CLI surfaces
 
 ```bash
-tako start
-tako status
-tako tui
-tako doctor
+bun run src/index.ts start
+bun run src/index.ts status
+bun run src/index.ts tui
+bun run src/index.ts doctor
 
-tako principals list --home <edgeHome>
-tako projects list --home <edgeHome>
-tako shared-sessions list --home <edgeHome>
-tako network status --home <edgeHome>
-tako hub status --home <hubHome>
+bun run src/index.ts principals list --home <edgeHome>
+bun run src/index.ts projects list --home <edgeHome>
+bun run src/index.ts shared-sessions list --home <edgeHome>
+bun run src/index.ts network status --home <edgeHome>
+bun run src/index.ts hub status --home <hubHome>
 ```
+
+If you build or install the package, the same commands are also available as `tako ...`.
+For source-based development and server setup in this repo, prefer `bun run src/index.ts ...`.
 
 ## Project workflow
 
@@ -188,9 +197,9 @@ Use these entry points instead of relying on older docs that still describe the 
 ## Current verification
 
 Latest verified checks:
-- `npm run typecheck`
-- `npm run build`
-- `npm test`
+- `bun run tsc --noEmit`
+- `bun run build`
+- `bun test`
 
 Latest verified suite result:
 - `484 pass, 0 fail`

@@ -4,7 +4,7 @@ Use this guide when you want to:
 - run one edge on a server
 - connect it to Discord
 - start it from source with `bun run src/index.ts ...`
-- keep it running in the background
+- keep it running in the background with Tako's built-in daemon mode
 
 This is the recommended first deployment path.
 
@@ -120,9 +120,11 @@ Typical development config shape:
 }
 ```
 
-## 7. Start the edge in the foreground first
+## 7. Start the edge
 
-Always do one foreground run before backgrounding it:
+### First do one foreground check
+
+Run it once in the foreground first:
 
 ```bash
 cd ~/tako
@@ -133,6 +135,59 @@ Expected:
 - Discord slash commands register
 - bot comes online
 - no immediate auth/config errors
+
+### Recommended server command after that: built-in daemon mode
+
+Then move to Tako's built-in daemon mode:
+
+```bash
+cd ~/tako
+bun run src/index.ts start --home /tmp/tako-discord/edge-main --port 18801 -d
+```
+
+Useful follow-up commands:
+
+```bash
+bun run src/index.ts status --home /tmp/tako-discord/edge-main --json
+bun run src/index.ts stop --home /tmp/tako-discord/edge-main
+bun run src/index.ts restart --home /tmp/tako-discord/edge-main
+```
+
+### Alternative background options
+
+Only use these if you do not want Tako's built-in daemon mode.
+
+`nohup`
+```bash
+cd ~/tako
+nohup bun run src/index.ts start --home /tmp/tako-discord/edge-main --port 18801 > /tmp/tako-discord/edge-main.log 2>&1 &
+```
+
+Check logs:
+
+```bash
+tail -f /tmp/tako-discord/edge-main.log
+```
+
+`tmux`
+```bash
+tmux new -s tako-edge
+cd ~/tako
+bun run src/index.ts start --home /tmp/tako-discord/edge-main --port 18801
+```
+
+Detach with:
+- `Ctrl-b d`
+
+Reattach with:
+
+```bash
+tmux attach -t tako-edge
+```
+
+`systemd`
+- use this if the server should survive reboot and login/logout cleanly
+- if you already use `-d`, do not also wrap the daemonized command in `nohup` or `tmux`
 
 ## 8. Test in Discord
 
@@ -153,45 +208,7 @@ If mention replies do not work, check:
 - `MESSAGE CONTENT INTENT` is enabled
 - the bot can read that channel
 
-## 9. Run it in the background
-
-### Option A: `nohup`
-
-Simple first step:
-
-```bash
-cd ~/tako
-nohup bun run src/index.ts start --home /tmp/tako-discord/edge-main --port 18801 > /tmp/tako-discord/edge-main.log 2>&1 &
-```
-
-Check:
-
-```bash
-tail -f /tmp/tako-discord/edge-main.log
-```
-
-### Option B: `tmux`
-
-Better for active development:
-
-```bash
-tmux new -s tako-edge
-cd ~/tako
-bun run src/index.ts start --home /tmp/tako-discord/edge-main --port 18801
-```
-
-Detach:
-- `Ctrl-b d`
-
-Reattach:
-
-```bash
-tmux attach -t tako-edge
-```
-
-### Option C: `systemd`
-
-Best for stable server hosting.
+## 9. Persistent server hosting with `systemd`
 
 Example unit:
 
@@ -224,9 +241,8 @@ sudo systemctl status tako-edge
 cd ~/tako
 git pull
 bun install
+bun run src/index.ts restart --home /tmp/tako-discord/edge-main
 ```
-
-Then restart the process with the same command you used before.
 
 ## 11. Useful checks
 

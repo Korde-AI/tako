@@ -6,16 +6,10 @@
  */
 import { join, resolve } from 'node:path';
 import { resolveConfig } from '../config/resolve.js';
-import { writePidFile, removePidFile } from '../daemon/pid.js';
-import { CLIChannel } from '../channels/cli.js';
-import { TUIChannel } from '../channels/tui.js';
-import { DiscordChannel } from '../channels/discord.js';
-import { composeChannelRuntimes } from '../channels/runtime-composition.js';
+import { writePidFile } from '../daemon/pid.js';
 import { createMessageSurfaceResolver } from '../channels/surface-capabilities.js';
-import { TelegramChannel } from '../channels/telegram.js';
 import { createBuiltinChannelPlatformRegistry, inferChannelPlatformFromChannelId, type ChannelPlatform } from '../channels/platforms.js';
-import { createBuiltinChannelSetupAdapters } from '../channels/setup-adapters.js';
-import { createTelegramCommandHandler } from '../channels/telegram-runtime.js';
+import type { DiscordChannel } from '../channels/discord.js';
 import { AnthropicProvider } from '../providers/anthropic.js';
 import { OpenAIProvider } from '../providers/openai.js';
 import { LiteLLMProvider } from '../providers/litellm.js';
@@ -28,25 +22,20 @@ import { configureExecSafety } from '../tools/exec.js';
 import { AgentLoop } from '../core/agent-loop.js';
 import { PromptBuilder } from '../core/prompt.js';
 import { ContextManager } from '../core/context.js';
-import { SessionManager, type Session } from '../gateway/session.js';
-import { Gateway } from '../gateway/gateway.js';
+import { SessionManager } from '../gateway/session.js';
 import { SessionCompactor } from '../gateway/compaction.js';
 import { TakoHookSystem } from '../hooks/hooks.js';
 import { createEmbeddingProvider } from '../memory/embeddings.js';
 import { buildAgentSkillLoader, initializeSkillRuntime } from '../skills/runtime-loader.js';
-import { loadSkillRuntimeExtensions } from '../skills/runtime-extensions.js';
 import { bootstrapWorkspace, ensureDailyMemory } from '../core/bootstrap.js';
 import { SandboxManager } from '../sandbox/sandbox.js';
 import { AgentRegistry } from '../agents/registry.js';
 import { resolveAgentForChannel } from '../agents/config.js';
 import { SubAgentOrchestrator } from '../agents/subagent.js';
 import { ThreadBindingManager } from '../core/thread-bindings.js';
-import type { Channel, InboundMessage } from '../channels/channel.js';
+import type { Channel } from '../channels/channel.js';
 import { CommandRegistry } from '../commands/registry.js';
-import { showModelPicker } from '../commands/model-picker.js';
 import { installFileLogger } from '../utils/logger.js';
-import { createChannelSetupController } from '../commands/channel-setup.js';
-import { isUserAllowed } from '../auth/allow-from.js';
 import { checkTokenHealth } from '../auth/storage.js';
 import { DeliveryQueue } from '../channels/delivery-queue.js';
 import { initMediaStorage, persistAttachments } from '../media/storage.js';
@@ -79,7 +68,7 @@ import { importArtifactEnvelope } from '../projects/distribution.js';
 import { ProjectApprovalRegistry } from '../projects/approvals.js';
 import { ProjectBackgroundRegistry } from '../projects/background.js';
 import { ProjectChannelCoordinatorRegistry } from '../projects/channel-coordination.js';
-import { registerKernelToolPacks, registerRuntimeToolPacks, registerSurfaceToolPacks, registerCronToolPack } from '../core/tool-composition.js';
+import { registerKernelToolPacks, registerRuntimeToolPacks, registerSurfaceToolPacks } from '../core/tool-composition.js';
 import { ChannelDeliveryRegistry } from '../core/channel-delivery.js';
 import { createAcpRuntimeBundle } from '../core/runners/acp-runner.js';
 import { createPeerTaskRuntimeHandlers } from '../core/runners/peer-approval-runner.js';
@@ -98,8 +87,6 @@ import { DelegationExecutor } from '../network/delegation-executor.js';
 import {
   buildExecutionContext,
   toAuditContext,
-  toCommandContext,
-  toSessionMetadata,
   type ExecutionContext,
 } from '../core/execution-context.js';
 import { createProjectCoordinationRuntime } from './project-coordination.js';
@@ -108,6 +95,8 @@ import { startNetworkRuntime } from './network-runtime.js';
 import { createProjectRuntime } from './project-runtime.js';
 import { createEdgeSessionRuntime } from './edge-session-runtime.js';
 import { createEdgeChannelRuntime } from './edge-channel-runtime.js';
+import { composeEdgeRuntimeChannels, createEdgeGateway } from './edge-channel-composition.js';
+import { startEdgeLifecycle } from './edge-lifecycle.js';
 
 const VERSION = '0.0.1';
 
@@ -841,9 +830,6 @@ export async function runEdgeRuntime(): Promise<void> {
 
   // ─── Initialize channels ──────────────────────────────────────────
 
-  const channels: Channel[] = [];
-  let discordChannel: DiscordChannel | undefined;
-  const discordChannels: DiscordChannel[] = [];
   projectCoordinationRuntime = createProjectCoordinationRuntime({
     projectBindings,
     projectRegistry,
@@ -869,7 +855,9 @@ export async function runEdgeRuntime(): Promise<void> {
     principalRegistry,
     channelDeliveryRegistry,
   });
-  let telegramChannel: TelegramChannel | undefined;
+  let shutdown: () => Promise<void> = async () => {
+    throw new Error('Edge lifecycle not initialized');
+  };
   const { wireChannel, createMessageQueueProcessor } = createEdgeChannelRuntime({
     config,
     audit,
@@ -901,104 +889,47 @@ export async function runEdgeRuntime(): Promise<void> {
     formatUserFacingAgentError,
   });
   messageQueueProcessor = createMessageQueueProcessor();
-
-  const useTui = process.argv.includes('--tui') && process.stdout.isTTY;
-
-  // Build available models list from config (primary + fallbacks + litellm + provider models)
-  const availableModels = [config.providers.primary];
-  if (config.providers.fallback) {
-    for (const fb of config.providers.fallback) {
-      if (!availableModels.includes(fb)) availableModels.push(fb);
-    }
-  }
-  if (config.providers.litellm?.models) {
-    for (const m of config.providers.litellm.models) {
-      const ref = `litellm/${m}`;
-      if (!availableModels.includes(ref)) availableModels.push(ref);
-    }
-  }
-  // Add known provider models from registered providers
-  for (const prov of [provider]) {
-    for (const m of prov.models()) {
-      const ref = `${m.provider}/${m.id}`;
-      if (!availableModels.includes(ref)) availableModels.push(ref);
-    }
-  }
-
-  if (useTui) {
-    const tui = new TUIChannel({
-      version: VERSION,
-      model: config.providers.primary,
-      toolCount: toolRegistry.getAllTools().length,
-      skillCount: skillManifests.length,
-      toolProfile: config.tools.profile,
-      memoryStatus: embeddingProvider ? 'hybrid' : 'BM25-only',
-      availableModels,
-      agents: agentRegistry.list().map((a: any) => ({
-        id: a.id,
-        description: a.description,
-        role: a.role,
-        isMain: a.isMain,
-      })),
-      onModelSwitch: (modelRef: string) => {
-        // Update the agent loop's model at runtime
-        agentLoop.setModel(modelRef);
-        config.providers.primary = modelRef;
-      },
-      onAgentSwitch: (agentId: string) => {
-        const agent = agentRegistry.get(agentId);
-        if (agent) {
-          // Switch workspace — prompt builder reads SOUL.md, AGENTS.md, etc. from here
-          promptBuilder.setWorkspace(agent.workspace);
-          // Switch model if agent has a different one
-          if (agent.model && agent.model !== agentLoop.getModel()) {
-            agentLoop.setModel(agent.model);
-          }
-          // Update working dir for tools
-          if (agent.workspace) {
-            promptBuilder.setWorkingDir(agent.workspace);
-          }
-          console.log(`[tako] Switched to agent: ${agentId} (role=${agent.role}, workspace=${agent.workspace})`);
-        }
-      },
-    });
-    channels.push(tui);
-    wireChannel(tui);
-
-    // Hook tool calls to show in TUI with proper colors
-    hooks.on('before_tool_call', (event: any) => {
-      const tuiBridge = (globalThis as any).__takoTui;
-      if (tuiBridge) {
-        tuiBridge.addMessage({
-          id: crypto.randomUUID(),
-          role: 'tool',
-          content: `Running...`,
-          toolName: event.data.toolName,
-          timestamp: new Date().toISOString(),
-        });
-      }
-    });
-
-    hooks.on('after_tool_call', (event: any) => {
-      const tuiBridge = (globalThis as any).__takoTui;
-      if (tuiBridge) {
-        const result = event.data.result;
-        const output = result.output?.slice(0, 200) ?? '';
-        const icon = result.success ? '[✓]' : '[✗]';
-        tuiBridge.addMessage({
-          id: crypto.randomUUID(),
-          role: 'tool',
-          content: `${icon} ${output}${output.length >= 200 ? '...' : ''}`,
-          toolName: event.data.toolName,
-          timestamp: new Date().toISOString(),
-        });
-      }
-    });
-  } else {
-    const cli = new CLIChannel(config.channels.cli);
-    channels.push(cli);
-    wireChannel(cli);
-  }
+  const {
+    channels,
+    discordChannel,
+    telegramChannel,
+    discordChannels,
+  } = await composeEdgeRuntimeChannels({
+    config,
+    version: VERSION,
+    startTime,
+    toolRegistry,
+    embeddingProvider,
+    agentRegistry,
+    commandRegistry,
+    principalRegistry,
+    sessions,
+    projectMemberships,
+    projectRuntime: {
+      resolveProject,
+      buildAgentAccessMetadata,
+      isDiscordInvocationAllowed,
+      autoEnrollProjectRoomParticipant,
+    },
+    sessionRuntime: {
+      buildInboundExecutionContext,
+      ensureSharedSession,
+      applyExecutionContextToSession,
+    },
+    hooks,
+    promptBuilder,
+    skillLoader,
+    skillManifests,
+    channelPlatforms,
+    projectRoomLifecycle,
+    projectChannelCoordinators,
+    channelDeliveryRegistry,
+    approvalButtonHandler,
+    wireChannel,
+    getAgentLoop,
+    provider,
+    defaultModel,
+  });
 
   // If other channels exist, don't let CLI stdin close kill the process
   if (config.channels.discord?.token || config.channels.telegram?.token) {
@@ -1190,242 +1121,6 @@ export async function runEdgeRuntime(): Promise<void> {
     }).catch(() => {});
   });
 
-  const handleSlashCommand = async (
-    commandName: string,
-    channelId: string,
-    author: { id: string; name: string; meta?: Record<string, unknown> },
-    agentId: string,
-    boundChannel: Channel,
-    guildId?: string,
-  ): Promise<string | null> => {
-      const principal = await principalRegistry.getOrCreateHuman({
-      displayName: author.name,
-      platform: 'discord',
-      platformUserId: author.id,
-      metadata: { channelId: `discord:${channelId}` },
-    });
-    const projectChannelTarget = channelId;
-    const resolvedProject = resolveProject({
-      platform: 'discord',
-      channelTarget: projectChannelTarget,
-      agentId,
-    });
-    const discordPolicy = await isDiscordInvocationAllowed({
-      agentId,
-      authorId: author.id,
-      authorName: author.name,
-      username: typeof author.meta?.username === 'string' ? author.meta.username : undefined,
-      principalId: principal.principalId,
-      channelName: typeof author.meta?.channelName === 'string' ? author.meta.channelName : undefined,
-      project: resolvedProject?.project ?? null,
-    });
-    if (!discordPolicy.allowed) {
-      console.log(
-        `[discord-auth] blocked slash command agent=${agentId} user=${author.id} principal=${principal.principalId} ` +
-        `channel=${channelId} name=${String(author.meta?.channelName ?? '')} reason=${discordPolicy.reason}`,
-      );
-      return null;
-    }
-    const projectRole = resolvedProject
-      ? getProjectRole(projectMemberships, resolvedProject.project.projectId, principal.principalId) ?? undefined
-      : undefined;
-    const accessMetadata = await buildAgentAccessMetadata({
-      platform: 'discord',
-      agentId,
-      authorId: author.id,
-      principalId: principal.principalId,
-      project: resolvedProject?.project ?? null,
-      metadata: guildId ? { guildId } : undefined,
-    });
-    const channelKey = `discord:${channelId}`;
-    const sessionKey = `agent:${agentId}:${channelKey}`;
-    const session = sessions.getOrCreate(sessionKey, {
-      name: `${agentId}/${channelKey}/${author.name}`,
-      metadata: toSessionMetadata(buildInboundExecutionContext({
-        agentId,
-        principal,
-        authorId: author.id,
-        authorName: author.name,
-        platform: 'discord',
-        channelId: channelKey,
-        channelTarget: channelId,
-        project: resolvedProject?.project ?? null,
-        projectRole: projectRole ?? null,
-        metadata: accessMetadata,
-      })),
-    });
-    let executionContext = buildInboundExecutionContext({
-      agentId,
-      sessionId: session.id,
-      principal,
-      authorId: author.id,
-      authorName: author.name,
-      platform: 'discord',
-      channelId: channelKey,
-      channelTarget: channelId,
-      project: resolvedProject?.project ?? null,
-      projectRole: projectRole ?? null,
-      metadata: accessMetadata,
-    });
-    const shared = await ensureSharedSession({ session, ctx: executionContext });
-    if (shared) {
-      executionContext = {
-        ...executionContext,
-        sharedSessionId: shared.sharedSessionId,
-        ownerPrincipalId: shared.ownerPrincipalId,
-        participantIds: shared.participantIds,
-        activeParticipantIds: shared.activeParticipantIds,
-      };
-    }
-    applyExecutionContextToSession(session, executionContext, boundChannel);
-
-    if (resolvedProject && !isProjectMember(projectMemberships, resolvedProject.project.projectId, principal.principalId)) {
-      const enrolled = await autoEnrollProjectRoomParticipant({
-        project: resolvedProject.project,
-        principalId: principal.principalId,
-        principalName: principal.displayName,
-        platformUserId: author.id,
-        platform: 'discord',
-        addedBy: resolvedProject.project.ownerPrincipalId,
-      });
-      if (!enrolled) {
-        return 'You are not a member of this project.';
-      }
-    }
-
-    const cmdResult = await commandRegistry.handle('/' + commandName, {
-      ...toCommandContext(executionContext),
-      session,
-    });
-    if (cmdResult !== null) return cmdResult;
-    return null;
-  };
-
-  // Build native command list from the command registry
-  const nativeCommandList = [
-    ...commandRegistry.list(),
-    { name: 'setup', description: 'Configure agent channels (Discord/Telegram)' },
-  ];
-  const mainDiscordSlashHandler = async (
-    commandName: string,
-    channelId: string,
-    author: { id: string; name: string; meta?: Record<string, unknown> },
-    guildId?: string,
-  ) => {
-    const agentId = resolveAgentForChannel(agentRegistry.list(), 'discord', channelId);
-    return handleSlashCommand(commandName, channelId, author, agentId, discordChannel!, guildId);
-  };
-
-  const mainDiscordModelHandler = async (interaction: Parameters<typeof showModelPicker>[0]) => {
-    const providerModelsMap: Record<string, string[]> = {};
-
-    const anthropicProvider = new AnthropicProvider(
-      config.providers.anthropic?.setupToken ?? config.providers.anthropic?.apiKey,
-      undefined,
-      config.providers.anthropic?.baseUrl,
-    );
-    providerModelsMap['anthropic'] = anthropicProvider.models().map((m) => m.id);
-
-    const openaiProvider = new OpenAIProvider();
-    providerModelsMap['openai'] = openaiProvider.models().map((m) => m.id);
-
-    if (config.providers.litellm?.baseUrl) {
-      const litellmModels = config.providers.litellm.models ?? [];
-      if (litellmModels.length > 0) {
-        providerModelsMap['litellm'] = litellmModels;
-      } else if (provider.id === 'litellm') {
-        providerModelsMap['litellm'] = provider.models().map((m) => m.id);
-      }
-    }
-
-    const providers = Object.keys(providerModelsMap);
-    if (providers.length === 0) return false;
-
-    await showModelPicker(interaction, {
-      getModel: () => agentLoop.getModel(),
-      setModel: (ref: string) => {
-        agentLoop.setModel(ref);
-        config.providers.primary = ref;
-        import('../config/resolve.js').then(m => m.patchConfig({ providers: { primary: ref } })).catch(() => {});
-      },
-      getDefaultModel: () => defaultModel,
-      getProviders: () => providers,
-      getModelsForProvider: (p: string) => providerModelsMap[p] ?? [],
-    });
-
-    return true;
-  };
-
-  const channelSetupController = createChannelSetupController({
-    deps: {
-      listAgents: () => agentRegistry.list().map((a) => ({ id: a.id, description: a.description })),
-      saveChannelConfig: (agentId: string, channelType: string, cfg: Record<string, unknown>) =>
-        agentRegistry.saveChannelConfig(agentId, channelType, cfg),
-    },
-    adapters: createBuiltinChannelSetupAdapters(channelPlatforms),
-  });
-
-  const composedChannels = await composeChannelRuntimes({
-    config,
-    agentRegistry,
-    nativeCommandList,
-    mainDiscordHandlers: config.channels.discord?.token ? {
-      slashHandler: mainDiscordSlashHandler,
-      modelHandler: mainDiscordModelHandler,
-    } : undefined,
-    createAgentDiscordSlashHandler: ({ agentId, channel }) =>
-      async (commandName, channelId, author, guildId) =>
-        handleSlashCommand(commandName, channelId, author, agentId, channel, guildId),
-    createTelegramCommandHandler: ({ agentId, channel }) => createTelegramCommandHandler({
-      agentId,
-      channel,
-      deps: {
-        principalRegistry,
-        sessions,
-        commandRegistry,
-        resolveProject,
-        getProjectRole: (projectId, principalId) => getProjectRole(projectMemberships, projectId, principalId),
-        buildAgentAccessMetadata,
-        buildInboundExecutionContext,
-        toSessionMetadata,
-        ensureSharedSession,
-        applyExecutionContextToSession,
-        toCommandContext,
-        isProjectMember: (projectId, principalId) => isProjectMember(projectMemberships, projectId, principalId),
-      },
-    }),
-    projectRoomLifecycle,
-    projectChannelCoordinators,
-    channelDeliveryRegistry,
-    registerChannel: (channel) => {
-      channels.push(channel);
-      wireChannel(channel);
-    },
-    channelSetupController,
-    approvalButtonHandler,
-    platformRegistry: channelPlatforms,
-  });
-  discordChannel = composedChannels.discordChannel;
-  telegramChannel = composedChannels.telegramChannel;
-  discordChannels.push(...composedChannels.discordChannels.filter((channel) => !discordChannels.includes(channel)));
-
-  // ─── Skill runtime extensions ─────────────────────────────────────
-  const loadedSkills = skillLoader.getAll();
-  await loadSkillRuntimeExtensions({
-    loadedSkills,
-    skillChannelsConfig: config.skillChannels,
-    skillExtensionsConfig: config.skillExtensions,
-    registerChannel: (channel, source) => {
-      channelPlatforms.register({
-        id: channel.id,
-        displayName: source,
-      });
-      channels.push(channel);
-      wireChannel(channel);
-      console.log(`[tako] Loaded ${source}: ${channel.id}`);
-    },
-  });
-
   const messageSurfaceResolver = createMessageSurfaceResolver({
     channels,
     discordChannels,
@@ -1477,14 +1172,13 @@ export async function runEdgeRuntime(): Promise<void> {
     metadata: { nodeId: identity.nodeId, mode: 'edge' },
   });
   console.log(`[tako] node=${identity.nodeId} bind=${config.gateway.bind} port=${config.gateway.port}${config.network?.hub ? ` hub=${config.network.hub}` : ''}`);
-
-  const gateway = new Gateway(config.gateway, {
+  const gateway = createEdgeGateway({
+    config,
     sessions,
     agentLoop,
     hooks,
     sandboxManager,
     retryQueue,
-    sessionConfig: config.session,
     contextManager,
     provider: failoverProvider,
   });
@@ -1730,294 +1424,36 @@ export async function runEdgeRuntime(): Promise<void> {
     nodeId: identity.nodeId,
     configPath: config._configPath,
   });
-
-  // ─── SIGUSR1 — Graceful config reload ──────────────────────────
-
-  process.on('SIGUSR1', async () => {
-    console.log('[tako] Received SIGUSR1 — reloading config...');
-    try {
-      const newConfig = await resolveConfig();
-      // Update model
-      if (newConfig.providers.primary !== config.providers.primary) {
-        agentLoop.setModel(newConfig.providers.primary);
-        config.providers.primary = newConfig.providers.primary;
-        console.log(`[tako] Model updated to: ${newConfig.providers.primary}`);
-      }
-      // Update tool profile
-      if (newConfig.tools.profile !== config.tools.profile) {
-        toolRegistry.setProfile(newConfig.tools.profile);
-        config.tools.profile = newConfig.tools.profile;
-        console.log(`[tako] Tool profile updated to: ${newConfig.tools.profile}`);
-      }
-      // Reload skills
-      const newManifests = await skillLoader.discover();
-      for (const manifest of newManifests) {
-        const loaded = await skillLoader.load(manifest);
-        skillLoader.registerTools(loaded, toolRegistry);
-        skillLoader.registerHooks(loaded, hooks);
-      }
-      console.log(`[tako] Config reload complete. Skills: ${newManifests.length}`);
-
-      // Update gateway status info
-      gateway.setStatusInfo({
-        model: config.providers.primary,
-        tools: toolRegistry.getActiveTools().length,
-        skills: newManifests.length,
-        channels: channels.map((c) => c.id),
-      });
-    } catch (err) {
-      console.error('[tako] Config reload failed:', err instanceof Error ? err.message : err);
-    }
-  });
-
-  // ─── Cron Scheduler ────────────────────────────────────────────────
-
-  const { CronScheduler } = await import('../core/cron.js');
-  const cronScheduler = new CronScheduler();
-
-  cronScheduler.setHandlers({
-    agentTurn: async (message: string, model?: string) => {
-      const cronSession = sessions.create({ name: 'cron', metadata: { isCron: true } });
-      let response = '';
-      for await (const chunk of agentLoop.run(cronSession, message)) {
-        response += chunk;
-      }
-      return response;
-    },
-    systemEvent: (text: string) => {
-      // Inject into main session
-      const mainSession = sessions.get('main') ?? sessions.create({ name: 'main' });
-      sessions.addMessage(mainSession.id, { role: 'system', content: text });
-    },
-    delivery: (result, delivery) => {
-      if (delivery.mode === 'announce' && delivery.channel) {
-        const ch = channels.find((c) => c.id === delivery.channel || c.id.startsWith(delivery.channel!));
-        if (ch) {
-          ch.send({ target: delivery.to ?? '', content: `📋 **${result.jobName}**\n${result.response.slice(0, 1500)}` });
-        }
-      }
-    },
-  });
-
-  registerCronToolPack({
+  const lifecycle = await startEdgeLifecycle({
+    config,
+    runtimePaths,
+    version: VERSION,
+    resolvedProviderLabel,
+    embeddingProvider,
+    channels,
+    agentRegistry,
     toolRegistry,
-    cronScheduler,
+    skillLoader,
+    sessions,
+    threadBindings,
+    messageQueue,
+    deliveryQueue,
+    gateway,
+    agentLoop,
+    hooks,
+    getActiveToolCount: () => toolRegistry.getActiveTools().length,
+    stopHubHeartbeat: () => {
+      stopHubHeartbeat?.();
+      stopHubHeartbeat = null;
+    },
+    stopNetworkPolling: () => {
+      stopNetworkPolling?.();
+      stopNetworkPolling = null;
+    },
+    acpSessionManager,
+    sandboxManager,
   });
-  await cronScheduler.start();
-
-  // ─── Session idle sweep ──────────────────────────────────────────
-  // Every 2 minutes, check for sessions idle > 24h and archive them.
-  // Files stay on disk — only removed from active maps.
-
-  const idleSweepTimer = setInterval(async () => {
-    const expired = sessions.sweepIdle();
-    let archivedCount = 0;
-    for (const session of expired) {
-      // Only auto-expire sub-agent sessions and ACP sessions.
-      // Never end user-initiated channel sessions (discord/telegram/cli) —
-      // those persist indefinitely and get compressed when context grows large.
-      const isSubAgent = session.metadata.isSubAgent as boolean | undefined;
-      const isAcp = session.metadata.isAcp as boolean | undefined;
-      if (!isSubAgent && !isAcp) {
-        continue; // skip — user session, leave it alive
-      }
-
-      const channelType = session.metadata.channelType as string | undefined;
-      const target = session.metadata.channelTarget as string | undefined;
-      if (channelType && target) {
-        const channel = channels.find((ch) => ch.id === channelType);
-        if (channel) {
-          await channel.send({
-            target,
-            content: '⚙️ Session ended automatically after 24h of inactivity.',
-          }).catch(() => {});
-        }
-      }
-      sessions.archiveSession(session.id);
-      archivedCount++;
-    }
-    if (archivedCount > 0) {
-      console.log(`[tako] Archived ${archivedCount} idle sub-agent/ACP session(s)`);
-    }
-
-    // Sweep expired thread bindings (24h idle)
-    const expiredBindings = threadBindings.sweepExpired();
-    for (const binding of expiredBindings) {
-      const discordCh = channels.find((ch) => ch.id === 'discord');
-      if (discordCh) {
-        await discordCh.send({
-          target: binding.threadId,
-          content: '⚙️ Session ended automatically after 24h of inactivity. Messages here will no longer be routed.',
-        }).catch(() => {});
-
-        // Archive the thread
-        if ('archiveThread' in discordCh && typeof (discordCh as any).archiveThread === 'function') {
-          await (discordCh as any).archiveThread(binding.threadId).catch(() => {});
-        }
-      }
-    }
-    if (expiredBindings.length > 0) {
-      await threadBindings.save();
-      console.log(`[tako] Swept ${expiredBindings.length} expired thread binding(s)`);
-    }
-  }, 120_000);
-
-  // ─── Daily 4 AM session rotation ──────────────────────────────────
-  // Start fresh sessions every day at 4:00 AM local time.
-  // Old session files stay on disk for history.
-
-  let rotationTimeout: ReturnType<typeof setTimeout> | null = null;
-
-  function scheduleNextRotation() {
-    const now = new Date();
-    const next4am = new Date(now);
-    next4am.setHours(4, 0, 0, 0);
-    if (next4am <= now) {
-      next4am.setDate(next4am.getDate() + 1);
-    }
-    const delay = next4am.getTime() - now.getTime();
-    console.log(`[tako] Next session rotation at 4:00 AM (in ${Math.round(delay / 60000)}min)`);
-
-    rotationTimeout = setTimeout(async () => {
-      console.log('[tako] Running daily 4 AM session rotation...');
-      try {
-        const result = await sessions.rotateAllSessions();
-        console.log(`[tako] Rotated: ${result.archived.length} archived, ${result.created.length} created`);
-      } catch (err) {
-        console.error('[tako] Rotation error:', err instanceof Error ? err.message : err);
-      }
-      scheduleNextRotation();
-    }, delay);
-  }
-  scheduleNextRotation();
-
-  // ─── Shutdown ─────────────────────────────────────────────────────
-
-  const blockingIds = new Set(['cli', 'tui']);
-
-  async function shutdown() {
-    console.log('\n[tako] Shutting down...');
-
-    // Log shutdown — don't broadcast to channels (too noisy on restarts)
-    console.log('⚙️ Tako going offline.');
-
-    clearInterval(idleSweepTimer);
-    if (rotationTimeout) clearTimeout(rotationTimeout);
-    stopHubHeartbeat?.();
-    stopHubHeartbeat = null;
-    stopNetworkPolling?.();
-    stopNetworkPolling = null;
-    messageQueue.clear();
-    await threadBindings.save();
-    cronScheduler.stop();
-    skillLoader.stopWatching();
-    deliveryQueue.stop();
-    for (const ch of channels) {
-      await ch.disconnect().catch(() => {});
-    }
-    await gateway.stop();
-    await acpSessionManager.shutdown();
-    await sandboxManager.shutdown();
-    await sessions.shutdown();
-    await removePidFile();
-  }
-
-  process.on('SIGINT', async () => { await shutdown(); process.exit(0); });
-  process.on('SIGTERM', async () => { await shutdown(); process.exit(0); });
-
-  // ─── Print startup banner ─────────────────────────────────────────
-
-  const embeddingStatus = embeddingProvider ? 'vector+BM25' : 'BM25-only';
-  const channelNames = channels.map((c) => c.id).join(', ');
-  const loadedSkillNames = skillLoader.getAll().map((s) => s.manifest.name);
-
-  // TUI has its own header — skip the text banner
-  if (!useTui) {
-    console.log(`Tako 🐙 v${VERSION}`);
-    console.log(`Provider: ${resolvedProviderLabel}`);
-    console.log(`Tools: ${toolRegistry.getActiveTools().length} active (profile: ${config.tools.profile})`);
-    console.log(`Memory: ${embeddingStatus}`);
-    console.log(`Skills: ${loadedSkillNames.length} loaded (${loadedSkillNames.join(', ') || 'none'})`);
-    console.log(`Channels: ${channelNames}`);
-    console.log(`Sandbox: ${config.sandbox.mode}${config.sandbox.mode !== 'off' ? ` (scope: ${config.sandbox.scope}, workspace: ${config.sandbox.workspaceAccess})` : ''}`);
-    console.log(`Agents: ${agentRegistry.list().length} registered (${agentRegistry.list().map((a) => a.id).join(', ')})`);
-    console.log(`Gateway: ws://${config.gateway.bind}:${config.gateway.port}`);
-    console.log('Type /quit to exit.\n');
-  }
-
-  // Connect channels (CLI/TUI last since they block on input)
-  for (const ch of channels) {
-    if (!blockingIds.has(ch.id)) {
-      try {
-        await ch.connect();
-      } catch (err) {
-        console.error(`[${ch.id}] ✗ Failed to connect: ${err instanceof Error ? err.message : err}`);
-        console.error(`[${ch.id}]   Check your token/config with \`tako onboard\``);
-      }
-    }
-  }
-  // Helper: send a system message to all connected non-blocking channels
-  async function broadcastToChannels(text: string, includeAgentChannels = false): Promise<void> {
-    for (const ch of channels) {
-      if (blockingIds.has(ch.id)) continue;
-      if (!includeAgentChannels && ch.agentId) continue;
-      try {
-        if (ch.broadcast) {
-          await ch.broadcast(text);
-        }
-      } catch { /* channel may not be connected yet */ }
-    }
-  }
-
-  // Wait a moment for channels to fully connect (Discord ClientReady, etc.)
-  const hasExternalChannels = channels.some((ch) => !blockingIds.has(ch.id));
-  if (hasExternalChannels) {
-    await new Promise((r) => setTimeout(r, 2000));
-  }
-
-  // Activation intro broadcast intentionally disabled.
-
-  // Log startup — don't broadcast to channels (too noisy on restarts)
-  console.log(`🐙 Tako online — model: ${config.providers.primary}`);
-
-  // Deliver restart note if one exists (from a prior system_restart call)
-  try {
-    const { readFileSync, unlinkSync } = await import('node:fs');
-    const restartNotePath = getRuntimePaths().restartNoteFile;
-    const raw = readFileSync(restartNotePath, 'utf-8');
-    const restartNote = JSON.parse(raw) as { note: string; sessionKey?: string; channelId?: string; agentId?: string; timestamp: string };
-    unlinkSync(restartNotePath);
-
-    const noteText = `⚙️ ${restartNote.note}`;
-    console.log(`[tako] Post-restart: ${restartNote.note}`);
-
-    // Deliver to the originating channel if we know it, otherwise broadcast
-    let delivered = false;
-    if (restartNote.channelId) {
-      // Find the agent's channel that can send to this specific channel
-      const targetAgentId = restartNote.agentId || 'main';
-      const agentChannel = channels.find((ch) => ch.agentId === targetAgentId && !blockingIds.has(ch.id))
-        ?? channels.find((ch) => !blockingIds.has(ch.id));
-      if (agentChannel?.sendToChannel) {
-        try {
-          await agentChannel.sendToChannel(restartNote.channelId, noteText);
-          delivered = true;
-        } catch (err) {
-          console.warn('[tako] Failed to deliver restart note to originating channel:', err);
-        }
-      }
-    }
-    if (!delivered) {
-      // Fallback: broadcast to all channels
-      await broadcastToChannels(noteText);
-    }
-  } catch { /* no restart note, normal boot */ }
-
-  // Connect the blocking channel (CLI or TUI) last
-  const blockingChannel = channels.find((ch) => blockingIds.has(ch.id));
-  if (blockingChannel) {
-    await blockingChannel.connect();
-  }
+  shutdown = lifecycle.shutdown;
 }
 
 // ─── tako start --daemon ─────────────────────────────────────────────

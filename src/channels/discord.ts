@@ -45,9 +45,11 @@ import { fetchRecentDiscordMessages, inspectDiscordRoom } from './discord-inspec
 import {
   registerDiscordSkillCommands,
   registerDiscordSlashCommands,
+} from './discord-slash-commands.js';
+import {
   sendDiscordPatchApprovalRequest,
   sendDiscordPeerTaskApprovalRequest,
-} from './discord-interactions.js';
+} from './discord-approval-delivery.js';
 import type { SkillCommandSpec } from '../commands/skill-commands.js';
 
 export {
